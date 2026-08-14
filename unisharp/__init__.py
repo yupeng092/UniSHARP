@@ -1,0 +1,1 @@
+DEFAULT_MAX_DEPTH_M: float = 100.0

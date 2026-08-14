@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+UniK3D/
+3dgeer/
+checkpoints/
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+.pytest_cache/
