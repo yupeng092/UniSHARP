@@ -201,6 +201,16 @@ HF_TOKEN=hf_your_token bash scripts/download_npu_assets.sh \
   --assets re10k wildrgbd dl3dv \
   --wildrgbd-category <category-or-all> \
   --dl3dv-subset 1K --dl3dv-resolution 960P
+# Convert RE10K frames/cameras, then generate DL3DV pseudo z-depth on the NPU.
+python scripts/prepare_re10k_chunks.py \
+  --source-root /path/to/re10k_frames_and_metadata \
+  --output-root "$DATA_ROOT_RE10K" \
+  --manifest-path "$DATASET_MANIFEST_DIR/re10k_train_chunks.txt"
+python scripts/prepare_dl3dv_unik3d_depth.py \
+  --rgb-root "$DATA_ROOT_DL3DV" \
+  --depth-root "$DATA_ROOT_DL3DV_DEPTH" \
+  --device npu:0 --backbone vits \
+  --manifest-path "$DATASET_MANIFEST_DIR/dl3dv_train_scenes.txt"
 bash scripts/train_npu_portable.sh
 NPU_IDS=0,1,2,3 bash scripts/train_npu_portable_ddp.sh
 ```
@@ -254,9 +264,14 @@ required. The downloader invokes WildRGB-D's official downloader, which
 requires about 4 TB after extracting every category. DL3DV's official
 downloader provides RGB/poses but not the `mini_npz/per_image` depth tree that
 this trainer consumes: set `DATA_ROOT_DL3DV_DEPTH` to an already prepared
-depth export, then rerun the downloader to generate its manifest. Likewise,
-the training loader requires RE10K in its pre-packed `train/*.torch` format;
-the script warns if the downloaded release must still be converted. The
+depth export, then run `prepare_dl3dv_unik3d_depth.py` to create it and its
+manifest. The depth script runs pretrained UniK3D with the recorded pinhole
+intrinsics and converts radial distance to +Z camera depth before writing one
+`depth` array per `.npz`. Likewise, the training loader requires RE10K in its
+pre-packed `train/*.torch` format; use `prepare_re10k_chunks.py` after the
+official frame-and-camera preparation step. It accepts the public
+`images/<scene>/` plus `metadata/<scene>.json` layout and validates every
+frame's intrinsics and pose before packing. The
 released OmniRooms data is synthetic indoor panorama data; it is not a public
 collection of portrait, outdoor-travel, or arbitrary-web videos.
 

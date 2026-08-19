@@ -75,9 +75,9 @@ plyfile>=1.0.3
 #   manifests under dataset_manifests. `--assets re10k wildrgbd dl3dv`
 #   invokes the respective official download routes after the user has
 #   accepted their terms. It does not bypass gated access.
-# * RE10K must be converted to this repository's train/*.torch format when
-#   the official release is not already packed. DL3DV also needs a separately
-#   prepared mini_npz/per_image depth tree for this training loader.
+# * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
+#   release is not already packed. Build the required DL3DV per-image depth
+#   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.
 # * Set DATA_ROOT_RE10K, DATA_ROOT_WILDRGBD, DATA_ROOT_DL3DV, and
 #   DATA_ROOT_DL3DV_DEPTH for the mixed NPU launcher.
 # * Set DATASET_MANIFEST_DIR to the directory containing
