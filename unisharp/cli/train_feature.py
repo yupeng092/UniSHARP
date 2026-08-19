@@ -439,6 +439,19 @@ def _resolve_manifest_file(manifest_dir: Path | None, filename: str) -> Path | N
     return path if path.exists() else None
 
 
+def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label: str) -> list[Any]:
+    """Choose a stable non-empty training subset without changing source data."""
+    if not items or float(fraction) >= 1.0:
+        return items
+    if float(fraction) <= 0.0:
+        return []
+    count = max(1, int(round(len(items) * float(fraction))))
+    order = list(range(len(items)))
+    random.Random(int(seed) + sum(ord(ch) for ch in label)).shuffle(order)
+    selected = set(order[:count])
+    return [item for index, item in enumerate(items) if index in selected]
+
+
 @click.command()
 @click.option("--data-root-re10k", type=click.Path(path_type=Path, exists=True), default=None)
 @click.option("--data-root-hm3d", type=click.Path(path_type=Path, exists=True), default=None)
@@ -470,14 +483,16 @@ def _resolve_manifest_file(manifest_dir: Path | None, filename: str) -> Path | N
 @click.option("--sim-max-long-edge", type=int, default=512, show_default=True, help="Resize SIM ERP frames before cubemap conversion. 0 keeps native resolution.")
 @click.option("--train-resize-multiple", type=int, default=256, show_default=True, help="Before model forward, downsize training inputs to the largest H/W divisible by this value. 0 disables.")
 @click.option("--pinhole-train-size", type=int, default=0, show_default=True, help="Resize pinhole training datasets to NxN before model forward. 0 keeps dataset native resolution.")
+@click.option("--pinhole-train-height", type=int, default=0, show_default=True, help="Optional pinhole training height. Set together with --pinhole-train-width.")
+@click.option("--pinhole-train-width", type=int, default=0, show_default=True, help="Optional pinhole training width. Set together with --pinhole-train-height.")
 @click.option("--scanetpp-fisheye-far-depth-invalid-m", type=float, default=30.0, show_default=True)
 @click.option("--max-index-gap", type=int, default=10)
 @click.option("--device", type=str, default="cuda")
 @click.option("--renderer-backend", type=click.Choice(["gsplat", "portable"]), default="gsplat", show_default=True)
-@click.option("--portable-renderer-max-gaussians", type=int, default=8192, show_default=True)
-@click.option("--portable-renderer-max-gaussians-per-tile", type=int, default=128, show_default=True)
+@click.option("--portable-renderer-max-gaussians", type=int, default=0, show_default=True, help="0 keeps every visible Gaussian (gsplat-reference mode).")
+@click.option("--portable-renderer-max-gaussians-per-tile", type=int, default=0, show_default=True, help="0 keeps every Gaussian intersecting a tile (gsplat-reference mode).")
 @click.option("--portable-renderer-tile-size", type=int, default=16, show_default=True)
-@click.option("--portable-renderer-tile-span", type=int, default=5, show_default=True)
+@click.option("--portable-renderer-tile-span", type=int, default=0, show_default=True, help="Deprecated compatibility option; reference coverage is never span-culled.")
 @click.option("--render-low-pass-filter-eps", type=float, default=1e-2, show_default=True)
 @click.option("--ddp-timeout-hours", type=float, default=8.0)
 @click.option("--save-every", type=int, default=5000)
@@ -521,6 +536,9 @@ def _resolve_manifest_file(manifest_dir: Path | None, filename: str) -> Path | N
 @click.option("--dataset-weight-wildrgbd", type=float, default=1.0)
 @click.option("--dataset-weight-dl3dv", type=float, default=1.0)
 @click.option("--dataset-weight-scanetpp", type=float, default=0.0)
+@click.option("--dataset-fraction-re10k", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available RE10K chunks used for this run.")
+@click.option("--dataset-fraction-wildrgbd", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available WildRGB-D scenes used for this run.")
+@click.option("--dataset-fraction-dl3dv", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available DL3DV scenes used for this run.")
 @click.option(
     "--re10k-pseudo-depth-root",
     type=click.Path(path_type=Path, file_okay=False),
@@ -565,6 +583,8 @@ def train_feature_cli(
     sim_max_long_edge: int,
     train_resize_multiple: int,
     pinhole_train_size: int,
+    pinhole_train_height: int,
+    pinhole_train_width: int,
     scanetpp_fisheye_far_depth_invalid_m: float,
     max_index_gap: int,
     device: str,
@@ -616,6 +636,9 @@ def train_feature_cli(
     dataset_weight_wildrgbd: float,
     dataset_weight_dl3dv: float,
     dataset_weight_scanetpp: float,
+    dataset_fraction_re10k: float,
+    dataset_fraction_wildrgbd: float,
+    dataset_fraction_dl3dv: float,
     re10k_pseudo_depth_root: Path,
     re10k_pseudo_depth_autogen: bool,
     re10k_pseudo_depth_backbone: str,
@@ -646,6 +669,12 @@ def train_feature_cli(
         raise ValueError("--train-resize-multiple must be non-negative.")
     if int(pinhole_train_size) < 0:
         raise ValueError("--pinhole-train-size must be non-negative.")
+    if int(pinhole_train_height) < 0 or int(pinhole_train_width) < 0:
+        raise ValueError("--pinhole-train-height and --pinhole-train-width must be non-negative.")
+    if bool(int(pinhole_train_height)) != bool(int(pinhole_train_width)):
+        raise ValueError("Set --pinhole-train-height and --pinhole-train-width together.")
+    if int(pinhole_train_size) > 0 and int(pinhole_train_height) > 0:
+        raise ValueError("Use either --pinhole-train-size or --pinhole-train-height/--pinhole-train-width, not both.")
     if float(scanetpp_fisheye_far_depth_invalid_m) < 0.0:
         raise ValueError("--scanetpp-fisheye-far-depth-invalid-m must be non-negative.")
     if float(delta_clip) < 0.0:
@@ -680,9 +709,9 @@ def train_feature_cli(
         raise ValueError("--splat-sigma-max must be greater than --splat-sigma-min.")
     if int(portable_renderer_max_gaussians) < 0 or int(portable_renderer_max_gaussians_per_tile) < 0:
         raise ValueError("Portable renderer Gaussian limits must be non-negative.")
-    if int(portable_renderer_tile_size) < 1 or int(portable_renderer_tile_span) < 1:
-        raise ValueError("Portable renderer tile size and span must be positive.")
-    if int(portable_renderer_tile_span) % 2 == 0:
+    if int(portable_renderer_tile_size) < 1 or int(portable_renderer_tile_span) < 0:
+        raise ValueError("Portable renderer tile size must be positive and tile span non-negative.")
+    if int(portable_renderer_tile_span) > 0 and int(portable_renderer_tile_span) % 2 == 0:
         raise ValueError("--portable-renderer-tile-span must be odd.")
     if renderer_backend == "portable" and any(
         float(weight) > 0.0
@@ -726,6 +755,12 @@ def train_feature_cli(
     wildrgbd_enabled_for_train = bool(
         ((data_root_wildrgbd is not None) or bool(wild_roots)) and (float(dataset_weight_wildrgbd) > 0.0)
     )
+    if re10k_enabled_for_train and float(dataset_fraction_re10k) <= 0.0:
+        raise ValueError("dataset_weight_re10k>0 requires --dataset-fraction-re10k > 0.")
+    if wildrgbd_enabled_for_train and float(dataset_fraction_wildrgbd) <= 0.0:
+        raise ValueError("dataset_weight_wildrgbd>0 requires --dataset-fraction-wildrgbd > 0.")
+    if dl3dv_enabled_for_train and float(dataset_fraction_dl3dv) <= 0.0:
+        raise ValueError("dataset_weight_dl3dv>0 requires --dataset-fraction-dl3dv > 0.")
     if re10k_enabled_for_train and data_root_re10k is None:
         raise ValueError("dataset_weight_re10k>0 but --data-root-re10k is not provided.")
     if hm3d_enabled_for_train and data_root_hm3d is None:
@@ -762,8 +797,16 @@ def train_feature_cli(
         )
 
     dataset_seed = int(seed) if seed is not None else 12345
-    pinhole_output_h = int(pinhole_train_size) if int(pinhole_train_size) > 0 else None
-    pinhole_output_w = int(pinhole_train_size) if int(pinhole_train_size) > 0 else None
+    pinhole_output_h = (
+        int(pinhole_train_height)
+        if int(pinhole_train_height) > 0
+        else (int(pinhole_train_size) if int(pinhole_train_size) > 0 else None)
+    )
+    pinhole_output_w = (
+        int(pinhole_train_width)
+        if int(pinhole_train_width) > 0
+        else (int(pinhole_train_size) if int(pinhole_train_size) > 0 else None)
+    )
 
     re10k_ds = None
     if re10k_enabled_for_train:
@@ -791,6 +834,12 @@ def train_feature_cli(
             depth_max_m=float(max_depth_m),
             pseudo_far_depth_invalid_m=float(re10k_pseudo_far_depth_invalid_m),
             seed=dataset_seed,
+        )
+        re10k_ds.chunks = _deterministic_subset(
+            re10k_ds.chunks,
+            float(dataset_fraction_re10k),
+            seed=dataset_seed,
+            label="re10k",
         )
     hm3d_train_root = None
     if data_root_hm3d is not None:
@@ -854,6 +903,12 @@ def train_feature_cli(
             depth_max_m=float(max_depth_m),
             seed=dataset_seed,
         )
+        wildrgbd_ds.scene_dirs = _deterministic_subset(
+            wildrgbd_ds.scene_dirs,
+            float(dataset_fraction_wildrgbd),
+            seed=dataset_seed,
+            label="wildrgbd",
+        )
     dl3dv_ds = None
     if dl3dv_enabled_for_train:
         dl3dv_ds = DL3DVDataset(
@@ -873,6 +928,12 @@ def train_feature_cli(
             batch_size_hint=int(batch_size),
             depth_max_m=float(max_depth_m),
             seed=dataset_seed,
+        )
+        dl3dv_ds.scene_specs = _deterministic_subset(
+            dl3dv_ds.scene_specs,
+            float(dataset_fraction_dl3dv),
+            seed=dataset_seed,
+            label="dl3dv",
         )
 
     scanetpp_ds = None
@@ -1121,6 +1182,7 @@ def train_feature_cli(
             tile_span=int(portable_renderer_tile_span),
             max_gaussians=int(portable_renderer_max_gaussians),
             max_gaussians_per_tile=int(portable_renderer_max_gaussians_per_tile),
+            low_pass_filter_eps=float(render_low_pass_filter_eps),
         ).to(dev)
 
     loss_w = UnisharpLossWeights(

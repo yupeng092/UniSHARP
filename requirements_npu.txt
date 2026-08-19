@@ -69,9 +69,17 @@ plyfile>=1.0.3
 # ---------------------------------------------------------------------------
 # Models and data are not pip dependencies and must be prepared separately.
 # ---------------------------------------------------------------------------
-# * UniK3D-ViT-S pretrained weights are downloaded through Hugging Face on the
-#   first run. For offline hosts, pre-populate UniK3D/checkpoints/huggingface.
-# * Set DATA_ROOT_RE10K to the RealEstate10K data root.
+# * Prepare public weights and manifests before an offline run with:
+#      bash scripts/download_npu_assets.sh
+#   This caches UniK3D-ViT-S under UniK3D/checkpoints/huggingface and writes
+#   manifests under dataset_manifests. `--assets re10k wildrgbd dl3dv`
+#   invokes the respective official download routes after the user has
+#   accepted their terms. It does not bypass gated access.
+# * RE10K must be converted to this repository's train/*.torch format when
+#   the official release is not already packed. DL3DV also needs a separately
+#   prepared mini_npz/per_image depth tree for this training loader.
+# * Set DATA_ROOT_RE10K, DATA_ROOT_WILDRGBD, DATA_ROOT_DL3DV, and
+#   DATA_ROOT_DL3DV_DEPTH for the mixed NPU launcher.
 # * Set DATASET_MANIFEST_DIR to the directory containing
 #   re10k_train_chunks.txt and the other UniSHARP manifests.
 # * Verify the host after CANN setup and package installation:

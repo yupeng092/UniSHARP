@@ -179,6 +179,9 @@ dataset and manifest roots first:
 
 ```bash
 export DATA_ROOT_RE10K=/path/to/re10k
+export DATA_ROOT_WILDRGBD=/path/to/wildrgbd
+export DATA_ROOT_DL3DV=/path/to/dl3dv_rgb
+export DATA_ROOT_DL3DV_DEPTH=/path/to/dl3dv_depth
 export DATASET_MANIFEST_DIR=/path/to/dataset_manifests
 ```
 
@@ -192,6 +195,12 @@ On an Ascend host with CANN and a matching `torch_npu` installation:
 
 ```bash
 pip install -r requirements_npu.txt
+bash scripts/download_npu_assets.sh
+# After accepting the source dataset terms, download selected training data.
+HF_TOKEN=hf_your_token bash scripts/download_npu_assets.sh \
+  --assets re10k wildrgbd dl3dv \
+  --wildrgbd-category <category-or-all> \
+  --dl3dv-subset 1K --dl3dv-resolution 960P
 bash scripts/train_npu_portable.sh
 NPU_IDS=0,1,2,3 bash scripts/train_npu_portable_ddp.sh
 ```
@@ -205,6 +214,89 @@ portable-renderer configuration into each output directory. For offline
 multi-view rendering of exported Gaussian scenes, use
 `D:/PythonFiles/flash3d-main/render_cpu_multiview.py`; it is an inference
 tool, not the differentiable renderer used during training.
+
+The NPU launchers default to a rectangular `1536x1024` pinhole input
+(width x height), with `--train-resize-multiple 0`, so every pinhole dataset
+is resized to the same geometry before the UniSHARP forward pass. Override
+with `PINHOLE_TRAIN_WIDTH` and `PINHOLE_TRAIN_HEIGHT` together. This is much
+larger than the old 256-square smoke-test setting: the portable renderer
+still follows the full gsplat reference math, so use batch size 1 and expect
+substantially lower throughput than the fused CUDA renderer.
+
+#### NPU asset download and resolution policy
+
+The public-asset downloader caches the selected UniK3D weights and copies the
+released manifests into the layout expected by this repository:
+
+```bash
+# Default: UniK3D-ViT-S weights plus manifests only.
+bash scripts/download_npu_assets.sh
+
+# Cache ViT-S and ViT-B, and download a released UniSHARP checkpoint.
+bash scripts/download_npu_assets.sh \
+  --backbones vits vitb \
+  --assets unik3d manifests unisharp-checkpoints
+
+# Explicit only: full public OmniRooms download (about 541 GB).
+bash scripts/download_npu_assets.sh --assets omnirooms
+
+# Download official pinhole sources after accepting their respective terms.
+# Start with a small WildRGB-D category and the first 1K DL3DV scenes.
+HF_TOKEN=hf_your_token bash scripts/download_npu_assets.sh \
+  --assets re10k wildrgbd dl3dv \
+  --wildrgbd-category <category-name> \
+  --dl3dv-subset 1K --dl3dv-resolution 960P
+```
+
+Set `HF_TOKEN` before these commands only when the host needs authenticated
+Hugging Face access; accepting the RE10K and DL3DV dataset terms is still
+required. The downloader invokes WildRGB-D's official downloader, which
+requires about 4 TB after extracting every category. DL3DV's official
+downloader provides RGB/poses but not the `mini_npz/per_image` depth tree that
+this trainer consumes: set `DATA_ROOT_DL3DV_DEPTH` to an already prepared
+depth export, then rerun the downloader to generate its manifest. Likewise,
+the training loader requires RE10K in its pre-packed `train/*.torch` format;
+the script warns if the downloaded release must still be converted. The
+released OmniRooms data is synthetic indoor panorama data; it is not a public
+collection of portrait, outdoor-travel, or arbitrary-web videos.
+
+UniK3D-ViT-S and ViT-B share the original dynamic preprocessor: aspect ratio
+is constrained to 0.5--2.5, the internal feature image is a multiple of 14,
+and its pixel budget is 200k--600k. The current NPU launchers use
+`--unik3d-resolution-level 0`, selecting the 200k--240k tier; the outer
+`1536x1024` training image is therefore internally resampled to the selected
+UniK3D feature tier and aligned back afterwards. This preserves the UniK3D
+resolution policy. The portable renderer now follows the
+gsplat-classic pinhole mathematics (2D covariance filtering, 3.33-sigma tile
+bounds, depth ordering, alpha threshold/cap, and early-transmittance stopping)
+without default Gaussian culling. It is a PyTorch reference implementation,
+so it is much slower than a fused CUDA/NPU rasterizer.
+
+For an explicit speed or memory trade-off only, set finite limits before the
+NPU launcher; this intentionally stops being a complete gsplat reference pass:
+
+```bash
+PORTABLE_MAX_GAUSSIANS=8192 PORTABLE_MAX_GAUSSIANS_PER_TILE=128 \
+  bash scripts/train_npu_portable.sh
+```
+
+The NPU portable renderer currently supports pinhole data only. Its launchers
+therefore perform mixed RE10K + WildRGB-D + DL3DV training by default. The
+per-dataset weights can be changed with `DATASET_WEIGHT_RE10K`,
+`DATASET_WEIGHT_WILDRGBD`, and `DATASET_WEIGHT_DL3DV`. OmniRooms, HM3D, and
+ScanNet++ remain disabled until a generic-camera NPU renderer is available.
+
+Only a deterministic part of each already-prepared source is used by default:
+10% of RE10K chunks, all scenes in the chosen WildRGB-D category/categories,
+and the selected DL3DV subset (normally `1K`). Change these without deleting
+or copying source files:
+
+```bash
+DATASET_FRACTION_RE10K=0.10 \
+DATASET_FRACTION_WILDRGBD=1.0 \
+DATASET_FRACTION_DL3DV=1.0 \
+  bash scripts/train_npu_portable.sh
+```
 
 Training outputs are saved under:
 
