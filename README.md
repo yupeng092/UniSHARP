@@ -287,6 +287,20 @@ bounds, depth ordering, alpha threshold/cap, and early-transmittance stopping)
 without default Gaussian culling. It is a PyTorch reference implementation,
 so it is much slower than a fused CUDA/NPU rasterizer.
 
+For renderer-semantic validation, run the CUDA comparison before moving a
+configuration to NPU training. It uses the native `gsplat` renderer and this
+portable renderer with identical float32 inputs:
+
+```bash
+python scripts/validate_portable_gsplat_parity.py --num-gaussians 256
+```
+
+The portable path now uses gsplat's exact public projection expressions,
+discrete floor/ceil tile AABB rule, stable near-to-far depth ordering and
+classic alpha rejection/termination definition. CUDA-versus-NPU bit identity
+still requires an Ascend custom operator; this checker enforces numerical
+agreement against the installed CUDA gsplat version instead.
+
 For an explicit speed or memory trade-off only, set finite limits before the
 NPU launcher; this intentionally stops being a complete gsplat reference pass:
 

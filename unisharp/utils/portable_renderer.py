@@ -8,10 +8,13 @@ tile bounds, front-to-back compositing, gsplat's alpha threshold/cap, and
 early-transmittance termination. Tile assignment and depth sorting are
 discrete, as in gsplat; selected splats remain fully differentiable.
 
-This is intentionally a *reference* renderer, not an Ascend fused kernel.
-It therefore cannot be bitwise-identical to CUDA gsplat and can be much slower
-when no Gaussian limits are configured. It supports calibrated pinhole cameras
-only; fisheye and panorama still require a generic-camera renderer.
+This is intentionally a *reference* renderer, not an Ascend fused kernel. It
+uses gsplat's public PyTorch reference definitions for projection, tile AABBs,
+depth order and classic compositing. It can be numerically compared against
+CUDA gsplat, but cross-device bit identity still requires an Ascend custom
+operator with CUDA-compatible floating-point instructions and reductions. It
+supports calibrated pinhole cameras only; fisheye and panorama still require a
+generic-camera renderer.
 """
 
 from __future__ import annotations
@@ -100,7 +103,10 @@ class PortableGaussianRenderer(nn.Module):
         scales = gaussians.singular_values.to(dtype=torch.float32).clamp_min(1e-7)
         quaternions = gaussians.quaternions.to(dtype=torch.float32)
         colours = gaussians.colors.to(dtype=torch.float32)
-        opacity = gaussians.opacities.to(dtype=torch.float32).reshape(-1).clamp(0.0, 0.999)
+        # Do not pre-clamp opacity. gsplat applies only ``min(0.999, alpha)``
+        # after the Gaussian exponential, which differs for invalid/out-of-
+        # range values and is observable at the 1/255 rejection threshold.
+        opacity = gaussians.opacities.to(dtype=torch.float32).reshape(-1)
         if means.ndim != 2 or means.shape[-1] != 3:
             raise ValueError(f"Expected flattened Gaussian means [N,3], got {tuple(means.shape)}")
 
@@ -138,9 +144,11 @@ class PortableGaussianRenderer(nn.Module):
         cov_2d = jacobian @ cov_camera @ jacobian.transpose(-1, -2)
         cov_2d[:, 0, 0] = cov_2d[:, 0, 0] + self.low_pass_filter_eps
         cov_2d[:, 1, 1] = cov_2d[:, 1, 1] + self.low_pass_filter_eps
-        a, b, c = cov_2d[:, 0, 0], cov_2d[:, 0, 1], cov_2d[:, 1, 1]
-        determinant = (a * c - b.square()).clamp_min(1e-10)
-        inverse = torch.stack((c / determinant, -b / determinant, a / determinant), dim=-1)
+        a, b01, b10, c = cov_2d[:, 0, 0], cov_2d[:, 0, 1], cov_2d[:, 1, 0], cov_2d[:, 1, 1]
+        # Preserve the exact public gsplat reference expression, including the
+        # symmetric off-diagonal average rather than assuming b01 == b10.
+        determinant = (a * c - b01 * b10).clamp_min(1e-10)
+        inverse = torch.stack((c / determinant, -(b01 + b10) / 2.0 / determinant, a / determinant), dim=-1)
         # gsplat's classic 3DGS projection uses per-axis 3.33-sigma bounds,
         # rather than the looser largest-eigenvalue circle used previously.
         radius_x = torch.ceil(3.33 * torch.sqrt(a.clamp_min(0.0)))
@@ -160,12 +168,25 @@ class PortableGaussianRenderer(nn.Module):
         if self.max_gaussians > 0 and int(indices.numel()) > self.max_gaussians:
             keep = torch.topk(opacity[indices], k=self.max_gaussians, sorted=False).indices
             indices = indices[keep]
+        u, v, radius_x, radius_y = u[indices], v[indices], radius_x[indices], radius_y[indices]
+        tile_width = (int(width) + self.tile_size - 1) // self.tile_size
+        tile_height = (int(height) + self.tile_size - 1) // self.tile_size
+        # This is gsplat._isect_tiles' discrete AABB rule: lower-inclusive,
+        # upper-exclusive tile indices, rather than a floating overlap test.
+        tile_min_x = torch.floor((u - radius_x) / self.tile_size).to(torch.int64).clamp(0, tile_width)
+        tile_min_y = torch.floor((v - radius_y) / self.tile_size).to(torch.int64).clamp(0, tile_height)
+        tile_max_x = torch.ceil((u + radius_x) / self.tile_size).to(torch.int64).clamp(0, tile_width)
+        tile_max_y = torch.ceil((v + radius_y) / self.tile_size).to(torch.int64).clamp(0, tile_height)
         return {
-            "u": u[indices],
-            "v": v[indices],
+            "u": u,
+            "v": v,
             "z": z[indices],
-            "radius_x": radius_x[indices],
-            "radius_y": radius_y[indices],
+            "radius_x": radius_x,
+            "radius_y": radius_y,
+            "tile_min_x": tile_min_x,
+            "tile_min_y": tile_min_y,
+            "tile_max_x": tile_max_x,
+            "tile_max_y": tile_max_y,
             "inverse": inverse[indices],
             "opacity": opacity[indices],
             "colour": colours[indices],
@@ -186,15 +207,16 @@ class PortableGaussianRenderer(nn.Module):
             y1 = min(y0 + self.tile_size, height)
             for x0 in range(0, width, self.tile_size):
                 x1 = min(x0 + self.tile_size, width)
-                # This is gsplat's tile intersection predicate: every
-                # Gaussian whose 3.33-sigma axis-aligned bounds intersects a
-                # tile is included. tile_span is kept as an accepted legacy
-                # argument, but deliberately does not cull coverage.
+                # Match gsplat._isect_tiles exactly: discretize each 3.33σ
+                # AABB with floor/ceil first, then use lower-inclusive and
+                # upper-exclusive tile membership. tile_span remains a legacy
+                # argument and deliberately never culls coverage.
+                tile_x, tile_y = x0 // self.tile_size, y0 // self.tile_size
                 overlap = (
-                    (u + radius_x > float(x0))
-                    & (u - radius_x < float(x1))
-                    & (v + radius_y > float(y0))
-                    & (v - radius_y < float(y1))
+                    (projected["tile_min_x"] <= tile_x)
+                    & (tile_x < projected["tile_max_x"])
+                    & (projected["tile_min_y"] <= tile_y)
+                    & (tile_y < projected["tile_max_y"])
                 )
                 selected = torch.where(overlap)[0]
                 if self.max_gaussians_per_tile > 0 and int(selected.numel()) > self.max_gaussians_per_tile:
@@ -206,7 +228,10 @@ class PortableGaussianRenderer(nn.Module):
                     continue
                 # gsplat groups intersecting splats by tile and sorts them by
                 # increasing centre depth before classic alpha compositing.
-                selected = selected[torch.argsort(projected["z"][selected])]
+                # CUDA packs the positive float depth bits into its sort key.
+                # That has the same near-to-far order as float32 values; a
+                # stable sort retains Gaussian input order for equal depths.
+                selected = selected[torch.argsort(projected["z"][selected], stable=True)]
                 yy, xx = torch.meshgrid(
                     torch.arange(y0, y1, device=device, dtype=torch.float32) + 0.5,
                     torch.arange(x0, x1, device=device, dtype=torch.float32) + 0.5,
