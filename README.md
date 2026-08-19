@@ -170,6 +170,42 @@ Use the official gt-override training launcher:
 bash scripts/train.sh
 ```
 
+### CPU / Ascend NPU portable pre-training
+
+The portable path uses a differentiable, standard-PyTorch pinhole Gaussian
+renderer. It is intended for RE10K/WildRGB-D/DL3DV pre-training and does not
+support the CUDA-only panoramic, fisheye, or GEER rendering branches. Set the
+dataset and manifest roots first:
+
+```bash
+export DATA_ROOT_RE10K=/path/to/re10k
+export DATASET_MANIFEST_DIR=/path/to/dataset_manifests
+```
+
+Run a CPU smoke test or low-throughput training:
+
+```bash
+bash scripts/train_cpu_portable.sh
+```
+
+On an Ascend host with CANN and a matching `torch_npu` installation:
+
+```bash
+pip install -r requirements_npu.txt
+bash scripts/train_npu_portable.sh
+NPU_IDS=0,1,2,3 bash scripts/train_npu_portable_ddp.sh
+```
+
+`requirements_npu.txt` documents the non-pip driver/CANN prerequisites and
+the required PyTorch/torch_npu version-matching rule. Install that matched
+three-package set before running the requirements file.
+
+These launchers use the `vits` UniK3D backbone by default and write a
+portable-renderer configuration into each output directory. For offline
+multi-view rendering of exported Gaussian scenes, use
+`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`; it is an inference
+tool, not the differentiable renderer used during training.
+
 Training outputs are saved under:
 
 ```text
@@ -207,6 +243,39 @@ python scripts/infer_unisharp.py \
   --image-dir /path/to/images \
   --out-dir outputs/inference
 ```
+
+### CPU inference and multiview rendering
+
+`scripts/infer_unisharp_cpu.py` is the CPU migration of the native inference
+path: it keeps the same UniK3D camera-ray estimation, automatic camera fitting,
+UniSHARP Gaussian prediction, and export convention, without importing CUDA
+rendering dependencies. It writes `gaussians.pt`, `metadata.json`, and optional
+`gaussians.ply` for every input image.
+
+For perspective images, add `--render-multiview` to invoke the CPU renderer at
+`D:/PythonFiles/flash3d-main/render_cpu_multiview.py` automatically. The result
+is saved under each image's `multiview/` directory (views, contact sheet, and
+render report):
+
+```bash
+python scripts/infer_unisharp_cpu.py \
+  --checkpoint /path/to/step_XXXXXXX.pt \
+  --image /path/to/perspective.jpg \
+  --out-dir outputs/cpu_inference \
+  --max-long-edge 384 \
+  --threads 8 \
+  --render-multiview \
+  --render-rig cross5
+```
+
+The default Flash3D location can be changed with `--flash3d-root` or the
+`FLASH3D_ROOT` environment variable. If Flash3D uses another Python
+environment, pass its interpreter through `--renderer-python`.
+
+The configured Flash3D CPU renderer is pinhole-only, so fisheye and panorama
+inputs still run the complete CPU prediction/export path but skip multiview
+rendering with a warning. Their native CUDA renderer remains
+`scripts/infer_unisharp.py`.
 
 If calibrated camera parameters are available, pass them through a JSON file. Without this file, the script predicts rays with UniK3D and fits the camera parameters automatically.
 

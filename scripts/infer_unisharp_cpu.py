@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -51,6 +52,7 @@ PANORAMA_HFOV_THRESHOLD_DEG = 300.0
 PANORAMA_VFOV_THRESHOLD_DEG = 120.0
 PANORAMA_ASPECT_MIN = 1.9
 PANORAMA_ASPECT_MAX = 2.1
+DEFAULT_FLASH3D_ROOT = Path(os.environ.get("FLASH3D_ROOT", r"D:\PythonFiles\flash3d-main"))
 
 
 def _configure_caches() -> None:
@@ -558,6 +560,72 @@ def _focal_for_ply(
     return float(width)
 
 
+def _render_multiview_cpu(
+    args: argparse.Namespace,
+    gaussian_path: Path,
+    sample_dir: Path,
+    camera_kind: CameraKind,
+) -> Path | None:
+    """Render the exported perspective scene with Flash3D's CPU entry point.
+
+    UniSHARP's native renderer has CUDA-only gsplat/GEER dependencies.  The
+    Flash3D renderer understands the ``unisharp_gaussians`` payload directly,
+    so keeping rendering in a subprocess also avoids introducing those
+    optional dependencies into the CPU inference environment.
+    """
+    if not bool(args.render_multiview):
+        return None
+    if camera_kind != "perspective":
+        LOGGER.warning(
+            "Skipping CPU multiview rendering for %s input: the configured Flash3D "
+            "renderer accepts pinhole scenes only. gaussians.pt was still exported.",
+            camera_kind,
+        )
+        return None
+
+    flash3d_root = Path(args.flash3d_root)
+    renderer_script = flash3d_root / "render_cpu_multiview.py"
+    if not renderer_script.is_file():
+        raise FileNotFoundError(
+            "Flash3D CPU renderer not found: "
+            f"{renderer_script}. Set --flash3d-root or FLASH3D_ROOT."
+        )
+    renderer_python = Path(args.renderer_python) if args.renderer_python is not None else Path(sys.executable)
+    if not renderer_python.is_file():
+        raise FileNotFoundError(f"Renderer Python executable not found: {renderer_python}")
+
+    render_dir = sample_dir / "multiview"
+    command = [
+        str(renderer_python),
+        str(renderer_script),
+        "--gaussians",
+        str(gaussian_path),
+        "--output",
+        str(render_dir),
+        "--backend",
+        "torch",
+        "--rig",
+        str(args.render_rig),
+        "--baseline",
+        str(float(args.render_baseline)),
+        "--height",
+        str(int(args.render_height)),
+        "--width",
+        str(int(args.render_width)),
+        "--keep-ratio",
+        str(float(args.render_keep_ratio)),
+        "--use-source-intrinsics",
+        "--linear-to-srgb",
+    ]
+    render_threads = int(args.render_threads) if int(args.render_threads) > 0 else int(args.threads)
+    if render_threads > 0:
+        command.extend(["--threads", str(render_threads)])
+
+    LOGGER.info("Rendering CPU multiview images with %s", renderer_script)
+    subprocess.run(command, check=True, cwd=str(flash3d_root))
+    return render_dir
+
+
 def _process_one(
     args: argparse.Namespace,
     model: UnisharpFeatureModel,
@@ -616,7 +684,6 @@ def _process_one(
         "camera_params": camera_params.detach().cpu().contiguous() if camera_params is not None else None,
         "source_w2c": torch.eye(4, dtype=torch.float32),
     }
-    elapsed_seconds = time.perf_counter() - started
     payload: dict[str, Any] = {
         "format": "unisharp_gaussians",
         "format_version": 1,
@@ -645,7 +712,19 @@ def _process_one(
         "ray_fov_stats": _json_safe_stats(ray_stats),
         "aux": aux,
     }
-    torch.save(payload, sample_dir / "gaussians.pt")
+    gaussian_path = sample_dir / "gaussians.pt"
+    torch.save(payload, gaussian_path)
+
+    inference_elapsed_seconds = time.perf_counter() - started
+    render_started = time.perf_counter()
+    multiview_dir = _render_multiview_cpu(
+        args=args,
+        gaussian_path=gaussian_path,
+        sample_dir=sample_dir,
+        camera_kind=camera_kind,
+    )
+    render_elapsed_seconds = time.perf_counter() - render_started if multiview_dir is not None else None
+    elapsed_seconds = time.perf_counter() - started
 
     metadata = {
         "format": payload["format"],
@@ -663,11 +742,14 @@ def _process_one(
         else None,
         "ray_fov_stats": payload["ray_fov_stats"],
         "num_gaussians": num_gaussians,
+        "inference_elapsed_seconds": float(inference_elapsed_seconds),
+        "render_elapsed_seconds": float(render_elapsed_seconds) if render_elapsed_seconds is not None else None,
         "elapsed_seconds": float(elapsed_seconds),
         "conventions": payload["conventions"],
         "outputs": {
             "pt": "gaussians.pt",
             "ply": "gaussians.ply" if bool(args.save_ply) else None,
+            "multiview": "multiview" if multiview_dir is not None else None,
         },
     }
     (sample_dir / "metadata.json").write_text(
@@ -740,6 +822,39 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Include rays and predicted distance tensors in gaussians.pt (uses more RAM and disk).",
     )
     parser.add_argument("--threads", type=int, default=0, help="PyTorch CPU threads; 0 keeps its default.")
+    parser.add_argument(
+        "--render-multiview",
+        action="store_true",
+        help="After inference, render a CPU multiview rig with Flash3D's render_cpu_multiview.py.",
+    )
+    parser.add_argument(
+        "--flash3d-root",
+        type=Path,
+        default=DEFAULT_FLASH3D_ROOT,
+        help="Flash3D directory; defaults to FLASH3D_ROOT or D:/PythonFiles/flash3d-main.",
+    )
+    parser.add_argument(
+        "--renderer-python",
+        type=Path,
+        default=None,
+        help="Python executable for Flash3D rendering; defaults to this Python interpreter.",
+    )
+    parser.add_argument("--render-rig", choices=["cross5", "arc5", "grid9"], default="cross5")
+    parser.add_argument("--render-baseline", type=float, default=0.5)
+    parser.add_argument("--render-height", type=int, default=256)
+    parser.add_argument("--render-width", type=int, default=384)
+    parser.add_argument(
+        "--render-keep-ratio",
+        type=float,
+        default=1.0,
+        help="Fraction of exported Gaussians to keep for CPU rendering, in (0, 1].",
+    )
+    parser.add_argument(
+        "--render-threads",
+        type=int,
+        default=0,
+        help="Flash3D renderer CPU threads; 0 reuses --threads (or its default).",
+    )
     return parser
 
 
@@ -748,6 +863,12 @@ def main() -> None:
     args = _build_argparser().parse_args()
     if int(args.max_long_edge) < 0:
         raise ValueError("--max-long-edge must be >= 0.")
+    if int(args.render_height) <= 0 or int(args.render_width) <= 0:
+        raise ValueError("--render-height and --render-width must be positive.")
+    if not 0.0 < float(args.render_keep_ratio) <= 1.0:
+        raise ValueError("--render-keep-ratio must be in (0, 1].")
+    if float(args.render_baseline) < 0.0:
+        raise ValueError("--render-baseline must be >= 0.")
     if int(args.threads) > 0:
         torch.set_num_threads(int(args.threads))
     torch.set_float32_matmul_precision("high")

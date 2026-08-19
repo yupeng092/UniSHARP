@@ -1,0 +1,80 @@
+# UniSHARP portable Ascend NPU training environment (Linux only)
+#
+# This file is for scripts/train_npu_portable.sh and
+# scripts/train_npu_portable_ddp.sh.  Those scripts use the standard-PyTorch
+# portable renderer; they do NOT use gsplat, CUDA, Triton, 3DGEER, or the CUDA
+# KNN extension listed in requirements.txt.
+#
+# ---------------------------------------------------------------------------
+# System prerequisites — install these BEFORE pip, not through this file.
+# ---------------------------------------------------------------------------
+# 1. Huawei Ascend driver + firmware for the target accelerator (for example,
+#    Ascend 910/910B), installed by the host administrator.
+# 2. CANN toolkit/runtime compatible with both the driver and torch_npu.
+# 3. Linux x86_64 or aarch64, a supported CPython release (Python 3.10 is the
+#    tested baseline for this project), and a C++ build toolchain for packages
+#    that need one.
+# 4. In every training shell, initialise CANN first, for example:
+#      source /usr/local/Ascend/ascend-toolkit/set_env.sh
+#    Use the actual set_env.sh path of the installed CANN release.
+#
+# The PyTorch, torchvision and torch_npu versions are a matched three-way
+# combination with CANN. Do NOT install CUDA PyTorch on this host and do NOT
+# blindly install the newest torch_npu wheel. Select the exact versions from
+# the Ascend compatibility matrix, then install them BEFORE the packages
+# below. Example only (replace with your verified matched versions):
+#
+#   pip install torch==<TORCH_VERSION> torchvision==<TORCHVISION_VERSION>
+#   pip install /path/to/torch_npu-<MATCHED_VERSION>-linux_<ARCH>.whl
+#
+# Keep these three lines commented: a pinned version here would be wrong for
+# any host using another CANN release.
+# torch==<MATCHED_TORCH_VERSION>
+# torchvision==<MATCHED_TORCHVISION_VERSION>
+# torch_npu==<MATCHED_TORCH_NPU_VERSION>
+
+# Core training and data dependencies. Install only after torch, torchvision,
+# and torch_npu have been installed as a compatible set.
+numpy>=1.26,<2.1
+scipy>=1.11
+Pillow>=10.2
+h5py>=3.10
+click>=8.1.7
+tqdm>=4.66
+requests>=2.31
+PyYAML>=6.0
+protobuf>=4.25
+
+# UniK3D / lightweight ViT-S backbone loading.
+huggingface-hub>=0.22
+timm>=1.0
+safetensors>=0.4
+einops>=0.7
+
+# Optional, useful for dataset inspection and exported-scene rendering.
+imageio>=2.34
+imageio-ffmpeg>=0.5
+opencv-python-headless>=4.9
+matplotlib>=3.8
+plyfile>=1.0.3
+
+# ---------------------------------------------------------------------------
+# Intentionally excluded CUDA-only packages:
+#   gsplat, triton, xformers, 3DGEER/diff-gaussian-rasterization,
+#   UniK3D/unik3d/ops/knn CUDA extension, and CUDA PyTorch wheels.
+# The portable NPU scripts also set --lambda-percep 0, so LPIPS is optional.
+# ---------------------------------------------------------------------------
+# lpips>=0.1.4
+
+# ---------------------------------------------------------------------------
+# Models and data are not pip dependencies and must be prepared separately.
+# ---------------------------------------------------------------------------
+# * UniK3D-ViT-S pretrained weights are downloaded through Hugging Face on the
+#   first run. For offline hosts, pre-populate UniK3D/checkpoints/huggingface.
+# * Set DATA_ROOT_RE10K to the RealEstate10K data root.
+# * Set DATASET_MANIFEST_DIR to the directory containing
+#   re10k_train_chunks.txt and the other UniSHARP manifests.
+# * Verify the host after CANN setup and package installation:
+#      python scripts/check_npu_env.py
+# * Then launch either scripts/train_npu_portable.sh or
+#   scripts/train_npu_portable_ddp.sh.

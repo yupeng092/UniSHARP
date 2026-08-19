@@ -156,7 +156,7 @@ class UnisharpFeatureModel(nn.Module):
                 dim_geometry_out=32,
                 stride_out=int(max(1, config.initializer_stride)),
             )
-        else:
+        elif config.unik3d_backbone == "vitb":
             dino_feature_dim = 768
             decoder_params = FeatureGaussianDecoderParams(
                 dims_3d_in=(96, 192, 384, 384),
@@ -168,6 +168,24 @@ class UnisharpFeatureModel(nn.Module):
                 dim_geometry_out=32,
                 stride_out=int(max(1, config.initializer_stride)),
             )
+        elif config.unik3d_backbone == "vits":
+            # UniK3D-ViT-S has a 384-channel DINO encoder and a radial
+            # pyramid ordered (high-to-low resolution) as 64/128/256/256.
+            # Keeping the decoder narrow is essential for the CPU/NPU path;
+            # treating ViT-S as ViT-B would fail at the feature-channel checks.
+            dino_feature_dim = 384
+            decoder_params = FeatureGaussianDecoderParams(
+                dims_3d_in=(64, 128, 256, 256),
+                dims_3d_out=(128, 256, 512, 512),
+                dim_2d_in=384,
+                dim_2d_out=128,
+                dim_decoder_out=128,
+                dim_texture_out=32,
+                dim_geometry_out=32,
+                stride_out=int(max(1, config.initializer_stride)),
+            )
+        else:
+            raise ValueError(f"Unsupported UniK3D backbone: {config.unik3d_backbone!r}")
 
         self.feature_extractor = UniK3DFeatureExtractor(
             unik3d_model=unik3d_model,

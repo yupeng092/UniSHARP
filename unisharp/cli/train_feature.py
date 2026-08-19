@@ -31,7 +31,6 @@ from unisharp.losses import UnisharpLoss, UnisharpLossWeights
 from unisharp.models.unisharp_feature import UnisharpFeatureModel, UnisharpFeatureConfig
 from unisharp.utils import logging as logging_utils
 from unisharp import DEFAULT_MAX_DEPTH_M
-from unisharp.utils.gsplat import GSplatRenderer
 from unisharp.utils.io import save_image
 from unisharp.utils.rayfit_camera import scale_pinhole_intrinsics
 from unisharp.utils.unified_vis import save_pair_visualization
@@ -255,30 +254,45 @@ def _ddp_is_enabled() -> bool:
 
 def _ddp_setup(device: str, ddp_timeout_hours: float = 8.0) -> tuple[torch.device, int, int, bool]:
     if not _ddp_is_enabled():
+        if str(device).split(":", 1)[0] == "npu":
+            try:
+                import torch_npu  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError("NPU training requires torch_npu matched to the installed CANN release.") from exc
         dev = torch.device(device)
         return dev, 0, 1, True
 
-    if device != "cuda":
-        raise RuntimeError("DDP currently supports CUDA only.")
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA not available.")
+    device_type = str(device).split(":", 1)[0]
+    if device_type not in {"cuda", "npu"}:
+        raise RuntimeError("DDP supports only CUDA or NPU devices.")
 
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    torch.cuda.set_device(local_rank)
+    if device_type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA not available.")
+        torch.cuda.set_device(local_rank)
+        backend = "nccl"
+    else:
+        try:
+            import torch_npu  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError("NPU DDP requires torch_npu matched to the installed CANN release.") from exc
+        if not hasattr(torch, "npu") or not torch.npu.is_available():
+            raise RuntimeError("No usable Ascend NPU is visible. Check CANN and ASCEND_RT_VISIBLE_DEVICES.")
+        torch.npu.set_device(local_rank)
+        backend = "hccl"
     timeout_hours = max(float(ddp_timeout_hours), 0.25)
     if rank == 0:
         print(
-            "[ddp_setup] init_process_group backend=nccl "
-            f"world_size={world_size} NCCL_NET={os.environ.get('NCCL_NET', '<unset>')} "
-            f"NCCL_IB_DISABLE={os.environ.get('NCCL_IB_DISABLE', '<unset>')}",
+            f"[ddp_setup] init_process_group backend={backend} world_size={world_size}",
             flush=True,
         )
-    dist.init_process_group(backend="nccl", timeout=timedelta(hours=timeout_hours))
+    dist.init_process_group(backend=backend, timeout=timedelta(hours=timeout_hours))
     if rank == 0:
         print("[ddp_setup] init_process_group done", flush=True)
-    dev = torch.device("cuda", local_rank)
+    dev = torch.device(device_type, local_rank)
     return dev, rank, world_size, (rank == 0)
 
 
@@ -427,14 +441,14 @@ def _resolve_manifest_file(manifest_dir: Path | None, filename: str) -> Path | N
 
 @click.command()
 @click.option("--data-root-re10k", type=click.Path(path_type=Path, exists=True), default=None)
-@click.option("--data-root-hm3d", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/panogs"))
-@click.option("--data-root-sim", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/smx_sim"))
-@click.option("--sim-pose-root", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/smx_sim/30cm"))
+@click.option("--data-root-hm3d", type=click.Path(path_type=Path, exists=True), default=None)
+@click.option("--data-root-sim", type=click.Path(path_type=Path, exists=True), default=None)
+@click.option("--sim-pose-root", type=click.Path(path_type=Path, exists=True), default=None)
 @click.option("--data-root-wildrgbd", type=click.Path(path_type=Path, exists=True), default=None)
-@click.option("--wild-roots-file", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=DEFAULT_WILDRGBD_ROOTS_FILE)
-@click.option("--data-root-dl3dv", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/sharp/DL3DV-ALL-960P"))
-@click.option("--data-root-dl3dv-depth", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/sharp/DL3DV-ALL-960P_da3_outputs"))
-@click.option("--data-root-scanetpp", type=click.Path(path_type=Path, exists=True), default=Path("/media/team_data/ML4_team/datasets/scan"))
+@click.option("--wild-roots-file", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
+@click.option("--data-root-dl3dv", type=click.Path(path_type=Path, exists=True), default=None)
+@click.option("--data-root-dl3dv-depth", type=click.Path(path_type=Path, exists=True), default=None)
+@click.option("--data-root-scanetpp", type=click.Path(path_type=Path, exists=True), default=None)
 @click.option("--dataset-manifest-dir", type=click.Path(path_type=Path, file_okay=False), default=None)
 @click.option("--out-root", type=click.Path(path_type=Path, file_okay=False), required=True)
 @click.option("--run-name", type=str, default=None)
@@ -459,12 +473,17 @@ def _resolve_manifest_file(manifest_dir: Path | None, filename: str) -> Path | N
 @click.option("--scanetpp-fisheye-far-depth-invalid-m", type=float, default=30.0, show_default=True)
 @click.option("--max-index-gap", type=int, default=10)
 @click.option("--device", type=str, default="cuda")
+@click.option("--renderer-backend", type=click.Choice(["gsplat", "portable"]), default="gsplat", show_default=True)
+@click.option("--portable-renderer-max-gaussians", type=int, default=8192, show_default=True)
+@click.option("--portable-renderer-max-gaussians-per-tile", type=int, default=128, show_default=True)
+@click.option("--portable-renderer-tile-size", type=int, default=16, show_default=True)
+@click.option("--portable-renderer-tile-span", type=int, default=5, show_default=True)
 @click.option("--render-low-pass-filter-eps", type=float, default=1e-2, show_default=True)
 @click.option("--ddp-timeout-hours", type=float, default=8.0)
 @click.option("--save-every", type=int, default=5000)
 @click.option("--log-every", type=int, default=50)
 @click.option("--vis-every", type=int, default=500)
-@click.option("--unik3d-backbone", type=click.Choice(["vitb", "vitl"]), default="vitl")
+@click.option("--unik3d-backbone", type=click.Choice(["vits", "vitb", "vitl"]), default="vitl")
 @click.option("--unik3d-resolution-level", type=click.IntRange(0, 9), default=0, show_default=True)
 @click.option("--initializer-stride", type=click.IntRange(1, 2), default=1)
 @click.option("--initializer-scale-factor", type=float, default=1.5, show_default=True)
@@ -521,7 +540,7 @@ def train_feature_cli(
     data_root_sim: Path | None,
     sim_pose_root: Path | None,
     data_root_wildrgbd: Path | None,
-    wild_roots_file: Path,
+    wild_roots_file: Path | None,
     data_root_dl3dv: Path | None,
     data_root_dl3dv_depth: Path | None,
     data_root_scanetpp: Path | None,
@@ -549,6 +568,11 @@ def train_feature_cli(
     scanetpp_fisheye_far_depth_invalid_m: float,
     max_index_gap: int,
     device: str,
+    renderer_backend: str,
+    portable_renderer_max_gaussians: int,
+    portable_renderer_max_gaussians_per_tile: int,
+    portable_renderer_tile_size: int,
+    portable_renderer_tile_span: int,
     render_low_pass_filter_eps: float,
     ddp_timeout_hours: float,
     save_every: int,
@@ -654,6 +678,19 @@ def train_feature_cli(
         raise ValueError("--splat-sigma-min must be non-negative.")
     if float(splat_sigma_max) <= float(splat_sigma_min):
         raise ValueError("--splat-sigma-max must be greater than --splat-sigma-min.")
+    if int(portable_renderer_max_gaussians) < 0 or int(portable_renderer_max_gaussians_per_tile) < 0:
+        raise ValueError("Portable renderer Gaussian limits must be non-negative.")
+    if int(portable_renderer_tile_size) < 1 or int(portable_renderer_tile_span) < 1:
+        raise ValueError("Portable renderer tile size and span must be positive.")
+    if int(portable_renderer_tile_span) % 2 == 0:
+        raise ValueError("--portable-renderer-tile-span must be odd.")
+    if renderer_backend == "portable" and any(
+        float(weight) > 0.0
+        for weight in (dataset_weight_hm3d, dataset_weight_sim, dataset_weight_scanetpp)
+    ):
+        raise ValueError(
+            "The portable renderer supports pinhole datasets only. Set the HM3D, SIM and ScanNet++ weights to zero."
+        )
     dev, rank, world_size, is_main = _ddp_setup(device, ddp_timeout_hours=ddp_timeout_hours)
 
     if seed is not None:
@@ -679,7 +716,7 @@ def train_feature_cli(
     sim_enabled_for_train = bool(float(dataset_weight_sim) > 0.0)
     dl3dv_enabled_for_train = bool(float(dataset_weight_dl3dv) > 0.0)
     scanetpp_enabled_for_train = bool(float(dataset_weight_scanetpp) > 0.0)
-    wild_roots = _read_nonempty_lines(wild_roots_file) if wild_roots_file.exists() else []
+    wild_roots = _read_nonempty_lines(wild_roots_file) if wild_roots_file is not None and wild_roots_file.exists() else []
     re10k_manifest = _resolve_manifest_file(dataset_manifest_dir, "re10k_train_chunks.txt")
     hm3d_manifest = _resolve_manifest_file(dataset_manifest_dir, "hm3d_train_scenes.txt")
     sim_manifest = _resolve_manifest_file(dataset_manifest_dir, "sim_train_scenes.txt")
@@ -1063,13 +1100,28 @@ def train_feature_cli(
     if dev.type == "cuda":
         scaler = torch.amp.GradScaler("cuda", enabled=True)
     else:
+        # NPU bf16 training does not need loss scaling.  A disabled scaler
+        # keeps the update code common across CPU, NPU and CUDA.
         scaler = torch.amp.GradScaler("cpu", enabled=False)
 
-    renderer = GSplatRenderer(
-        color_space="sRGB",
-        background_color="black",
-        low_pass_filter_eps=float(render_low_pass_filter_eps),
-    ).to(dev)
+    if renderer_backend == "gsplat":
+        from unisharp.utils.gsplat import GSplatRenderer
+
+        renderer = GSplatRenderer(
+            color_space="sRGB",
+            background_color="black",
+            low_pass_filter_eps=float(render_low_pass_filter_eps),
+        ).to(dev)
+    else:
+        from unisharp.utils.portable_renderer import PortableGaussianRenderer
+
+        renderer = PortableGaussianRenderer(
+            background_color="black",
+            tile_size=int(portable_renderer_tile_size),
+            tile_span=int(portable_renderer_tile_span),
+            max_gaussians=int(portable_renderer_max_gaussians),
+            max_gaussians_per_tile=int(portable_renderer_max_gaussians_per_tile),
+        ).to(dev)
 
     loss_w = UnisharpLossWeights(
         lambda_color=float(lambda_color),
@@ -1109,6 +1161,9 @@ def train_feature_cli(
             "re10k_pseudo_far_depth_invalid_m": float(re10k_pseudo_far_depth_invalid_m),
             "scanetpp_fisheye_far_depth_invalid_m": float(scanetpp_fisheye_far_depth_invalid_m),
             "render_low_pass_filter_eps": float(render_low_pass_filter_eps),
+            "renderer_backend": str(renderer_backend),
+            "portable_renderer_max_gaussians": int(portable_renderer_max_gaussians),
+            "portable_renderer_max_gaussians_per_tile": int(portable_renderer_max_gaussians_per_tile),
         }
         (out_dir / "config.json").write_text(
             json.dumps(config_dict, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -1228,8 +1283,10 @@ def train_feature_cli(
 
         opt.zero_grad(set_to_none=True)
 
-        autocast_enabled = dev.type == "cuda"
-        if autocast_enabled and torch.cuda.is_bf16_supported():
+        autocast_enabled = dev.type in {"cuda", "npu"}
+        if dev.type == "cuda" and torch.cuda.is_bf16_supported():
+            autocast_dtype = torch.bfloat16
+        elif dev.type == "npu":
             autocast_dtype = torch.bfloat16
         else:
             autocast_dtype = torch.float16 if autocast_enabled else torch.bfloat16
