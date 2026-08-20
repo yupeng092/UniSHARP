@@ -373,10 +373,12 @@ UniSHARP Gaussian prediction, and export convention, without importing CUDA
 rendering dependencies. It writes `gaussians.pt`, `metadata.json`, and optional
 `gaussians.ply` for every input image.
 
-For perspective images, add `--render-multiview` to invoke the CPU renderer at
-`D:/PythonFiles/flash3d-main/render_cpu_multiview.py` automatically. The result
-is saved under each image's `multiview/` directory (views, contact sheet, and
-render report):
+For perspective images, add `--render-multiview` to execute the CPU port of
+the native `scripts/infer_unisharp.py` multiview branch. It uses the same
+source-to-world conversion, adaptive close-scene motion, 10-frame forward
+trajectory, 10-frame orbit trajectory, alpha compositing, sRGB conversion,
+and 5% border crop. The output is saved under each image's `multiview/`
+directory as `forward.gif`, `rotate.gif`, and render metadata:
 
 ```bash
 python scripts/infer_unisharp_cpu.py \
@@ -385,18 +387,14 @@ python scripts/infer_unisharp_cpu.py \
   --out-dir outputs/cpu_inference \
   --max-long-edge 384 \
   --threads 8 \
-  --render-multiview \
-  --render-rig cross5
+  --render-multiview
 ```
 
-The default Flash3D location can be changed with `--flash3d-root` or the
-`FLASH3D_ROOT` environment variable. If Flash3D uses another Python
-environment, pass its interpreter through `--renderer-python`.
-
-The configured Flash3D CPU renderer is pinhole-only, so fisheye and panorama
-inputs still run the complete CPU prediction/export path but skip multiview
-rendering with a warning. Their native CUDA renderer remains
-`scripts/infer_unisharp.py`.
+The CPU renderer is a PyTorch reference implementation of the native gsplat
+pinhole operation, rather than the CUDA gsplat kernel itself. Fisheye and
+panorama inputs still run the complete CPU prediction/export path but skip
+multiview rendering because their native paths use CUDA-only renderers. Use
+`scripts/infer_unisharp.py` for those camera types on CUDA.
 
 If calibrated camera parameters are available, pass them through a JSON file. Without this file, the script predicts rays with UniK3D and fits the camera parameters automatically.
 
