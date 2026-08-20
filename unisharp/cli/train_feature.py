@@ -466,10 +466,9 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--data-root-scanetpp", type=click.Path(path_type=Path, exists=True), default=None)
 @click.option("--coco-person-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--widerface-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
-@click.option("--humbi-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
-@click.option("--nersemble-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
-@click.option("--aistpp-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
-@click.option("--thuman-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
+@click.option("--openimages-person-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
+@click.option("--ffhq-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
+@click.option("--neuman-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--dataset-manifest-dir", type=click.Path(path_type=Path, file_okay=False), default=None)
 @click.option("--out-root", type=click.Path(path_type=Path, file_okay=False), required=True)
 @click.option("--run-name", type=str, default=None)
@@ -546,10 +545,9 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--dataset-weight-scanetpp", type=float, default=0.0)
 @click.option("--dataset-weight-coco-person", type=float, default=0.0, help="Single-view outdoor/person appearance reconstruction weight.")
 @click.option("--dataset-weight-widerface", type=float, default=0.0, help="Single-view face appearance reconstruction weight.")
-@click.option("--dataset-weight-humbi", type=float, default=0.0, help="Calibrated HUMBI face/body multi-view geometry weight.")
-@click.option("--dataset-weight-nersemble", type=float, default=0.0, help="Calibrated NeRSemble head multi-view geometry weight.")
-@click.option("--dataset-weight-aistpp", type=float, default=0.0, help="Calibrated AIST++ body/pose multi-view geometry weight.")
-@click.option("--dataset-weight-thuman", type=float, default=0.0, help="Rendered THuman multi-view human/cloth geometry weight.")
+@click.option("--dataset-weight-openimages-person", type=float, default=0.0, help="Open Images V7 outdoor/person appearance weight.")
+@click.option("--dataset-weight-ffhq", type=float, default=0.0, help="FFHQ high-resolution face appearance weight.")
+@click.option("--dataset-weight-neuman", type=float, default=0.0, help="NeuMan calibrated public human-video geometry weight.")
 @click.option("--dataset-fraction-re10k", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available RE10K chunks used for this run.")
 @click.option("--dataset-fraction-wildrgbd", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available WildRGB-D scenes used for this run.")
 @click.option("--dataset-fraction-dl3dv", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available DL3DV scenes used for this run.")
@@ -578,10 +576,9 @@ def train_feature_cli(
     data_root_scanetpp: Path | None,
     coco_person_manifest: Path | None,
     widerface_manifest: Path | None,
-    humbi_manifest: Path | None,
-    nersemble_manifest: Path | None,
-    aistpp_manifest: Path | None,
-    thuman_manifest: Path | None,
+    openimages_person_manifest: Path | None,
+    ffhq_manifest: Path | None,
+    neuman_manifest: Path | None,
     dataset_manifest_dir: Path | None,
     out_root: Path,
     run_name: str | None,
@@ -658,10 +655,9 @@ def train_feature_cli(
     dataset_weight_scanetpp: float,
     dataset_weight_coco_person: float,
     dataset_weight_widerface: float,
-    dataset_weight_humbi: float,
-    dataset_weight_nersemble: float,
-    dataset_weight_aistpp: float,
-    dataset_weight_thuman: float,
+    dataset_weight_openimages_person: float,
+    dataset_weight_ffhq: float,
+    dataset_weight_neuman: float,
     dataset_fraction_re10k: float,
     dataset_fraction_wildrgbd: float,
     dataset_fraction_dl3dv: float,
@@ -773,10 +769,9 @@ def train_feature_cli(
     scanetpp_enabled_for_train = bool(float(dataset_weight_scanetpp) > 0.0)
     coco_person_enabled_for_train = bool(float(dataset_weight_coco_person) > 0.0)
     widerface_enabled_for_train = bool(float(dataset_weight_widerface) > 0.0)
-    humbi_enabled_for_train = bool(float(dataset_weight_humbi) > 0.0)
-    nersemble_enabled_for_train = bool(float(dataset_weight_nersemble) > 0.0)
-    aistpp_enabled_for_train = bool(float(dataset_weight_aistpp) > 0.0)
-    thuman_enabled_for_train = bool(float(dataset_weight_thuman) > 0.0)
+    openimages_person_enabled_for_train = bool(float(dataset_weight_openimages_person) > 0.0)
+    ffhq_enabled_for_train = bool(float(dataset_weight_ffhq) > 0.0)
+    neuman_enabled_for_train = bool(float(dataset_weight_neuman) > 0.0)
     wild_roots = _read_nonempty_lines(wild_roots_file) if wild_roots_file is not None and wild_roots_file.exists() else []
     re10k_manifest = _resolve_manifest_file(dataset_manifest_dir, "re10k_train_chunks.txt")
     hm3d_manifest = _resolve_manifest_file(dataset_manifest_dir, "hm3d_train_scenes.txt")
@@ -811,14 +806,12 @@ def train_feature_cli(
         raise ValueError("dataset_weight_coco_person>0 but --coco-person-manifest is missing.")
     if widerface_enabled_for_train and widerface_manifest is None:
         raise ValueError("dataset_weight_widerface>0 but --widerface-manifest is missing.")
-    if humbi_enabled_for_train and humbi_manifest is None:
-        raise ValueError("dataset_weight_humbi>0 but --humbi-manifest is missing.")
-    if nersemble_enabled_for_train and nersemble_manifest is None:
-        raise ValueError("dataset_weight_nersemble>0 but --nersemble-manifest is missing.")
-    if aistpp_enabled_for_train and aistpp_manifest is None:
-        raise ValueError("dataset_weight_aistpp>0 but --aistpp-manifest is missing.")
-    if thuman_enabled_for_train and thuman_manifest is None:
-        raise ValueError("dataset_weight_thuman>0 but --thuman-manifest is missing.")
+    if openimages_person_enabled_for_train and openimages_person_manifest is None:
+        raise ValueError("dataset_weight_openimages_person>0 but --openimages-person-manifest is missing.")
+    if ffhq_enabled_for_train and ffhq_manifest is None:
+        raise ValueError("dataset_weight_ffhq>0 but --ffhq-manifest is missing.")
+    if neuman_enabled_for_train and neuman_manifest is None:
+        raise ValueError("dataset_weight_neuman>0 but --neuman-manifest is missing.")
 
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1018,29 +1011,23 @@ def train_feature_cli(
             ddp_world_size=world_size,
             seed=dataset_seed + 17,
         )
-    humbi_ds = None
-    if humbi_enabled_for_train:
-        humbi_ds = CalibratedMultiViewDataset(
-            humbi_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+    openimages_person_ds = None
+    if openimages_person_enabled_for_train:
+        openimages_person_ds = AppearanceDataset(
+            openimages_person_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
             ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 31,
         )
-    nersemble_ds = None
-    if nersemble_enabled_for_train:
-        nersemble_ds = CalibratedMultiViewDataset(
-            nersemble_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+    ffhq_ds = None
+    if ffhq_enabled_for_train:
+        ffhq_ds = AppearanceDataset(
+            ffhq_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
             ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 47,
         )
-    aistpp_ds = None
-    if aistpp_enabled_for_train:
-        aistpp_ds = CalibratedMultiViewDataset(
-            aistpp_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+    neuman_ds = None
+    if neuman_enabled_for_train:
+        neuman_ds = CalibratedMultiViewDataset(
+            neuman_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
             ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 59,
-        )
-    thuman_ds = None
-    if thuman_enabled_for_train:
-        thuman_ds = CalibratedMultiViewDataset(
-            thuman_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
-            ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 71,
         )
 
     hm3d_sampler = None
@@ -1149,28 +1136,22 @@ def train_feature_cli(
             **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory),
             collate_fn=re10k_collate,
         )
-    humbi_dl = None
-    if humbi_ds is not None:
-        humbi_dl = DataLoader(
-            humbi_ds, batch_size=batch_size,
+    openimages_person_dl = None
+    if openimages_person_ds is not None:
+        openimages_person_dl = DataLoader(
+            openimages_person_ds, batch_size=batch_size,
             **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
         )
-    nersemble_dl = None
-    if nersemble_ds is not None:
-        nersemble_dl = DataLoader(
-            nersemble_ds, batch_size=batch_size,
+    ffhq_dl = None
+    if ffhq_ds is not None:
+        ffhq_dl = DataLoader(
+            ffhq_ds, batch_size=batch_size,
             **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
         )
-    aistpp_dl = None
-    if aistpp_ds is not None:
-        aistpp_dl = DataLoader(
-            aistpp_ds, batch_size=batch_size,
-            **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
-        )
-    thuman_dl = None
-    if thuman_ds is not None:
-        thuman_dl = DataLoader(
-            thuman_ds, batch_size=batch_size,
+    neuman_dl = None
+    if neuman_ds is not None:
+        neuman_dl = DataLoader(
+            neuman_ds, batch_size=batch_size,
             **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
         )
 
@@ -1209,22 +1190,18 @@ def train_feature_cli(
         candidate_datasets["widerface"] = widerface_ds
         candidate_dataloaders["widerface"] = widerface_dl
         candidate_weights["widerface"] = float(dataset_weight_widerface)
-    if humbi_ds is not None and humbi_dl is not None:
-        candidate_datasets["humbi"] = humbi_ds
-        candidate_dataloaders["humbi"] = humbi_dl
-        candidate_weights["humbi"] = float(dataset_weight_humbi)
-    if nersemble_ds is not None and nersemble_dl is not None:
-        candidate_datasets["nersemble"] = nersemble_ds
-        candidate_dataloaders["nersemble"] = nersemble_dl
-        candidate_weights["nersemble"] = float(dataset_weight_nersemble)
-    if aistpp_ds is not None and aistpp_dl is not None:
-        candidate_datasets["aistpp"] = aistpp_ds
-        candidate_dataloaders["aistpp"] = aistpp_dl
-        candidate_weights["aistpp"] = float(dataset_weight_aistpp)
-    if thuman_ds is not None and thuman_dl is not None:
-        candidate_datasets["thuman"] = thuman_ds
-        candidate_dataloaders["thuman"] = thuman_dl
-        candidate_weights["thuman"] = float(dataset_weight_thuman)
+    if openimages_person_ds is not None and openimages_person_dl is not None:
+        candidate_datasets["openimages_person"] = openimages_person_ds
+        candidate_dataloaders["openimages_person"] = openimages_person_dl
+        candidate_weights["openimages_person"] = float(dataset_weight_openimages_person)
+    if ffhq_ds is not None and ffhq_dl is not None:
+        candidate_datasets["ffhq"] = ffhq_ds
+        candidate_dataloaders["ffhq"] = ffhq_dl
+        candidate_weights["ffhq"] = float(dataset_weight_ffhq)
+    if neuman_ds is not None and neuman_dl is not None:
+        candidate_datasets["neuman"] = neuman_ds
+        candidate_dataloaders["neuman"] = neuman_dl
+        candidate_weights["neuman"] = float(dataset_weight_neuman)
 
     datasets: dict[str, Any] = {}
     dataloaders: dict[str, DataLoader] = {}

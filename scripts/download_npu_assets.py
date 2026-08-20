@@ -10,6 +10,8 @@ granted; it never mirrors, scrapes, or bypasses their access controls.
 """
 
 import argparse
+import csv
+import io
 import json
 import os
 import shutil
@@ -36,6 +38,11 @@ COCO_ANNOTATIONS_URL = "https://images.cocodataset.org/annotations/annotations_t
 COCO_IMAGE_URL_TEMPLATE = "https://images.cocodataset.org/{split}/{filename}"
 WIDER_FACE_REPO = "CUHK-CSE/wider_face"
 WIDER_FACE_PATTERNS = ("data/WIDER_train.zip", "data/WIDER_val.zip", "data/wider_face_split.zip")
+OPENIMAGES_TRAIN_BOXES_URL = "https://storage.googleapis.com/openimages/v6/oidv6-train-annotations-bbox.csv"
+OPENIMAGES_IMAGE_URL_TEMPLATE = "https://open-images-dataset.s3.amazonaws.com/{split}/{image_id}.jpg"
+OPENIMAGES_PERSON_LABEL = "/m/01g317"
+FFHQ_DOWNLOADER_URL = "https://raw.githubusercontent.com/NVlabs/ffhq-dataset/master/download_ffhq.py"
+NEUMAN_DATA_URL = "https://docs-assets.developer.apple.com/ml-research/datasets/neuman/dataset.zip"
 MANIFEST_REPO = OMNIROOMS_REPO
 MANIFEST_PATTERNS = ("manifests/train/*", "manifests/validation/*")
 
@@ -384,6 +391,89 @@ def _download_coco_person(
     print(f"COCO person subset prepared: {target} ({len(records)} images)")
 
 
+def _download_openimages_person(*, target: Path, manifest_root: Path, max_images: int, dry_run: bool) -> None:
+    """Stream the public Open Images boxes and download a bounded Person subset."""
+    if dry_run:
+        count_text = "all matching images" if int(max_images) == 0 else f"up to {int(max_images)} matching images"
+        print(f"would stream Open Images V7 Person boxes and download {count_text} into {target}")
+        return
+    if int(max_images) < 0:
+        raise ValueError("max_images must be >= 0")
+    target.mkdir(parents=True, exist_ok=True)
+    by_image: dict[str, list[tuple[float, float, float, float]]] = {}
+    print("Streaming Open Images Person annotations …")
+    with urllib.request.urlopen(OPENIMAGES_TRAIN_BOXES_URL) as response:
+        rows = csv.DictReader(io.TextIOWrapper(response, encoding="utf-8"))
+        for row in rows:
+            if row.get("LabelName") != OPENIMAGES_PERSON_LABEL or row.get("IsGroupOf") == "1":
+                continue
+            image_id = str(row["ImageID"])
+            if int(max_images) > 0 and image_id not in by_image and len(by_image) >= int(max_images):
+                break
+            by_image.setdefault(image_id, []).append(
+                (float(row["XMin"]), float(row["XMax"]), float(row["YMin"]), float(row["YMax"]))
+            )
+    image_root = target / "images" / "train"
+    rows_out: list[str] = []
+    for index, (image_id, boxes) in enumerate(sorted(by_image.items()), start=1):
+        image_path = image_root / f"{image_id}.jpg"
+        _download_url(OPENIMAGES_IMAGE_URL_TEMPLATE.format(split="train", image_id=image_id), image_path, dry_run=False)
+        try:
+            from PIL import Image
+            with Image.open(image_path) as image:
+                width, height = image.size
+        except Exception as exc:
+            print(f"Warning: skip unreadable Open Images file {image_path}: {exc}")
+            continue
+        boxes_xywh = [[xmin * width, ymin * height, (xmax - xmin) * width, (ymax - ymin) * height] for xmin, xmax, ymin, ymax in boxes]
+        rows_out.append(json.dumps({"image": str(image_path.resolve()), "person_boxes_xywh": boxes_xywh}))
+        if index % 100 == 0 or index == len(by_image):
+            print(f"Open Images person images: {index}/{len(by_image)}")
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    manifest = manifest_root / "openimages_person_train_boxes.jsonl"
+    manifest.write_text("\n".join(rows_out) + "\n", encoding="utf-8")
+    print(f"Open Images Person subset prepared: {target} ({len(rows_out)} images)")
+
+
+def _prepare_ffhq(*, target: Path, manifest_root: Path, download_images: bool, dry_run: bool) -> None:
+    """Fetch NVIDIA's public downloader and optionally retrieve the 89 GB 1024px set."""
+    script_path = target / "download_ffhq.py"
+    if dry_run:
+        suffix = " and download all 70,000 1024px images" if download_images else ""
+        print(f"would fetch the official FFHQ downloader into {target}{suffix}")
+        return
+    _download_url(FFHQ_DOWNLOADER_URL, script_path, dry_run=False)
+    if download_images:
+        subprocess.run([sys.executable, str(script_path), "--images"], cwd=str(target), check=True)
+    image_root = target / "images1024x1024"
+    images = sorted(path.resolve() for path in image_root.rglob("*.png")) if image_root.is_dir() else []
+    if not images:
+        print(f"FFHQ downloader is ready: run `python {script_path} --images` to fetch the public 1024px set (about 89 GB).")
+        return
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    manifest = manifest_root / "ffhq_images.txt"
+    manifest.write_text("\n".join(str(path) for path in images) + "\n", encoding="utf-8")
+    print(f"FFHQ image manifest prepared: {manifest} ({len(images)} images)")
+
+
+def _download_neuman(*, target: Path, dry_run: bool) -> None:
+    """Download Apple's public NeuMan package; no account or approval is used."""
+    archive = target / ".archives" / "neuman_dataset.zip"
+    if dry_run:
+        print(f"would download public NeuMan data ({NEUMAN_DATA_URL}) into {target}")
+        return
+    _download_url(NEUMAN_DATA_URL, archive, dry_run=False)
+    marker = target / ".neuman_extracted"
+    if not marker.exists():
+        with zipfile.ZipFile(archive) as package:
+            package.extractall(target)
+        marker.write_text("ok\n", encoding="utf-8")
+    print(
+        f"NeuMan data prepared: {target}. Convert any COLMAP cameras.txt/images.txt found there with "
+        f"scripts/prepare_calibrated_colmap.py --source-root {target} --manifest <manifest>/neuman_train.jsonl"
+    )
+
+
 def _read_widerface_boxes(annotation: Path) -> list[tuple[str, list[list[float]]]]:
     """Parse the released WIDER FACE bounding-box text format."""
     lines = annotation.read_text(encoding="utf-8").splitlines()
@@ -480,39 +570,12 @@ def _download_widerface(
     print(f"WIDER FACE subset prepared: {target} ({len(records)} images)")
 
 
-def _prepare_calibrated_human_dataset(
-    *, name: str, slug: str, target: Path, manifest_root: Path, source_url: str, preparation: str, dry_run: bool
-) -> None:
-    """Prepare a local integration point for licensed calibrated human data.
-
-    This intentionally never guesses archive URLs or bypasses a dataset's
-    registration, research-use, or non-commercial terms.  It records the
-    common JSONL contract used by the mixed UniSHARP loader instead.
-    """
-    if dry_run:
-        print(f"would prepare {name} integration under {target}; get it from {source_url}")
-        return
-    target.mkdir(parents=True, exist_ok=True)
-    manifest_root.mkdir(parents=True, exist_ok=True)
-    template = manifest_root / f"{slug}_train.template.jsonl"
-    if not template.exists():
-        template.write_text(
-            '{"scene":"subject/expression","frames":[{"image":"/absolute/path/frame0.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},{"image":"/absolute/path/frame1.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0.1],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}]}\n',
-            encoding="utf-8",
-        )
-    print(
-        f"{name}: get the approved release from {source_url}, place it under {target}, then {preparation} "
-        f"Convert the resulting RGB frames and OpenCV camera metadata to {template.name}; save the completed "
-        f"manifest as {slug}_train.jsonl."
-    )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--assets",
         nargs="+",
-        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "humbi", "nersemble", "aistpp", "thuman"),
+        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "openimages-person", "ffhq", "neuman"),
         default=("unik3d", "manifests"),
         help="Assets to download. Large datasets are always explicit options.",
     )
@@ -539,10 +602,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--widerface-root", type=Path, default=DATA_ROOT / "widerface")
     parser.add_argument("--widerface-max-images", type=int, default=10000, help="0 keeps every WIDER FACE train image with a labeled face.")
     parser.add_argument("--widerface-include-val", action="store_true", help="Also download WIDER FACE validation images and labels.")
-    parser.add_argument("--humbi-root", type=Path, default=DATA_ROOT / "humbi")
-    parser.add_argument("--nersemble-root", type=Path, default=DATA_ROOT / "nersemble")
-    parser.add_argument("--aistpp-root", type=Path, default=DATA_ROOT / "aistpp")
-    parser.add_argument("--thuman-root", type=Path, default=DATA_ROOT / "thuman")
+    parser.add_argument("--openimages-person-root", type=Path, default=DATA_ROOT / "openimages_person")
+    parser.add_argument("--openimages-person-max-images", type=int, default=10000, help="0 downloads every Open Images V7 train image with a Person box.")
+    parser.add_argument("--ffhq-root", type=Path, default=DATA_ROOT / "ffhq")
+    parser.add_argument("--ffhq-download-images", action="store_true", help="Download every public FFHQ 1024px image (about 89 GB).")
+    parser.add_argument("--neuman-root", type=Path, default=DATA_ROOT / "neuman")
     parser.add_argument("--token", default=None, help="Hugging Face token; defaults to HF_TOKEN if set.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned downloads without network access.")
     return parser
@@ -609,34 +673,18 @@ def main() -> None:
             include_val=bool(args.widerface_include_val),
             dry_run=bool(args.dry_run),
         )
-    if "humbi" in assets:
-        _prepare_calibrated_human_dataset(
-            name="HUMBI", slug="humbi", target=Path(args.humbi_root), manifest_root=Path(args.manifest_root),
-            source_url="https://github.com/zhixuany/HUMBI",
-            preparation="use its provided intrinsic/extrinsic calibration files for synchronized camera views.",
-            dry_run=bool(args.dry_run),
+    if "openimages-person" in assets:
+        _download_openimages_person(
+            target=Path(args.openimages_person_root), manifest_root=Path(args.manifest_root),
+            max_images=int(args.openimages_person_max_images), dry_run=bool(args.dry_run),
         )
-    if "nersemble" in assets:
-        _prepare_calibrated_human_dataset(
-            name="NeRSemble", slug="nersemble", target=Path(args.nersemble_root), manifest_root=Path(args.manifest_root),
-            source_url="https://github.com/tobias-kirschstein/nersemble",
-            preparation="request access and retain the release's calibrated synchronized head-camera views.",
-            dry_run=bool(args.dry_run),
+    if "ffhq" in assets:
+        _prepare_ffhq(
+            target=Path(args.ffhq_root), manifest_root=Path(args.manifest_root),
+            download_images=bool(args.ffhq_download_images), dry_run=bool(args.dry_run),
         )
-    if "aistpp" in assets:
-        _prepare_calibrated_human_dataset(
-            name="AIST++", slug="aistpp", target=Path(args.aistpp_root), manifest_root=Path(args.manifest_root),
-            source_url="https://google.github.io/aistplusplus_dataset/download.html",
-            preparation="run the official downloader, then pair synchronized camera views using the published calibration.",
-            dry_run=bool(args.dry_run),
-        )
-    if "thuman" in assets:
-        _prepare_calibrated_human_dataset(
-            name="THuman", slug="thuman", target=Path(args.thuman_root), manifest_root=Path(args.manifest_root),
-            source_url="https://github.com/ytrock/THuman2.0-Dataset",
-            preparation="render each approved scan into at least two views and write the renderer's OpenCV w2c matrices and pixel intrinsics.",
-            dry_run=bool(args.dry_run),
-        )
+    if "neuman" in assets:
+        _download_neuman(target=Path(args.neuman_root), dry_run=bool(args.dry_run))
 
 
 if __name__ == "__main__":

@@ -209,24 +209,30 @@ python scripts/download_npu_assets.py \
   --coco-person-split train2017 \
   --coco-person-max-images 5000
 
-# Prepare the selected calibrated multi-view integrations. This creates their
-# local directories and JSONL templates. Download each provider-approved
-# archive separately; the command never bypasses registrations or licenses.
+# Fully public, direct-download portrait/outdoor sources. No provider review
+# or account approval is required. FFHQ's complete 1024px set is ~89 GB and
+# is therefore opt-in; it is CC BY-NC-SA and cannot be used commercially.
 python scripts/download_npu_assets.py \
-  --assets humbi nersemble aistpp thuman
+  --assets coco-person openimages-person neuman \
+  --coco-person-max-images 5000 \
+  --openimages-person-max-images 10000
+python scripts/download_npu_assets.py --assets ffhq --ffhq-download-images
 
-# Portrait/outdoor NPU pre-training: COCO provides real outdoor-person
-# appearance; HUMBI and NeRSemble are the default calibrated face/body and
-# head geometry datasets. AIST++ and THuman are opt-in supplements.
+# Build the calibrated geometry manifest from the direct NeuMan release. The
+# converter accepts standard COLMAP text camera files when present.
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
-export HUMBI_MANIFEST="$DATASET_MANIFEST_DIR/humbi_train.jsonl"
-export NERSEMBLE_MANIFEST="$DATASET_MANIFEST_DIR/nersemble_train.jsonl"
+python scripts/prepare_calibrated_colmap.py \
+  --source-root "$PWD/datasets/neuman" \
+  --manifest "$DATASET_MANIFEST_DIR/neuman_train.jsonl"
+
+# COCO and Open Images provide real outdoor-person appearance. NeuMan is a
+# small direct-download calibrated human-video geometry source. FFHQ is
+# optional high-resolution face appearance augmentation.
+export NEUMAN_MANIFEST="$DATASET_MANIFEST_DIR/neuman_train.jsonl"
 UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
 
-# Enable pose and rendered-cloth supplements only after preparing their JSONL.
-AISTPP_WEIGHT=0.35 THUMAN_WEIGHT=0.35 \
-  AISTPP_MANIFEST="$DATASET_MANIFEST_DIR/aistpp_train.jsonl" \
-  THUMAN_MANIFEST="$DATASET_MANIFEST_DIR/thuman_train.jsonl" \
+# Enable FFHQ only after its 1024px images and image list have been prepared.
+FFHQ_WEIGHT=0.5 FFHQ_MANIFEST="$DATASET_MANIFEST_DIR/ffhq_images.txt" \
   UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
 
 # Single-node multi-card variant.

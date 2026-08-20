@@ -9,7 +9,7 @@ Each JSONL row is one scene::
   ]}
 
 ``w2c`` is an OpenCV world-to-camera 4x4 transform and intrinsics are pixel
-3x3.  HUMBI, NeRSemble, AIST++ and rendered THuman sequences can be
+3x3.  The direct NeuMan release, or any public COLMAP reconstruction, can be
 converted to this small explicit format without changing the training code.
 """
 
