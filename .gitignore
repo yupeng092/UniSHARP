@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 .venv/
 venv/
@@ -12,3 +12,4 @@ outputs/
 *.ckpt
 *.safetensors
 .pytest_cache/
+logs/

@@ -201,6 +201,20 @@ HF_TOKEN=hf_your_token bash scripts/download_npu_assets.sh \
   --assets re10k wildrgbd dl3dv \
   --wildrgbd-category <category-or-all> \
   --dl3dv-subset 1K --dl3dv-resolution 960P
+
+# Public COCO 2017 person subset for portrait/appearance augmentation.
+# This downloads only the selected person images, not the full train2017 zip.
+python scripts/download_npu_assets.py \
+  --assets coco-person \
+  --coco-person-split train2017 \
+  --coco-person-max-images 5000
+
+# Face-in-the-wild corpus: includes outdoor/event scenes and face boxes.
+# WIDER FACE train archives are about 1.5 GB; only the first 10k sorted
+# annotated images are listed in the augmentation manifest by default.
+python scripts/download_npu_assets.py \
+  --assets widerface \
+  --widerface-max-images 10000
 # Convert RE10K frames/cameras, then generate DL3DV pseudo z-depth on the NPU.
 python scripts/prepare_re10k_chunks.py \
   --source-root /path/to/re10k_frames_and_metadata \
@@ -408,11 +422,12 @@ python scripts/infer_unisharp_cpu.py \
 
 ### Flash3D-compatible standalone CPU rendering
 
-`scripts/render_unisharp_cpu.py` is the Flash3D-compatible standalone entry
-point. It forwards the full interface of
-`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`, so it produces the same
-`cross5` views, RGB/alpha/depth folders, comparison grid and report for an
-exported UniSHARP `gaussians.pt` file:
+`scripts/render_unisharp_cpu.py` is a vendored copy of
+`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`; its required
+`scripts/render_cpu_alpha.py` helper is vendored alongside it. It therefore
+produces the same `cross5` views, RGB/alpha/depth folders, comparison grid and
+report for an exported UniSHARP `gaussians.pt` file without a Flash3D path
+dependency:
 
 ```bash
 python scripts/render_unisharp_cpu.py \
@@ -426,8 +441,6 @@ python scripts/render_unisharp_cpu.py \
   --linear-to-srgb
 ```
 
-Use `--flash3d-root D:/PythonFiles/flash3d-main` only when Flash3D is located
-elsewhere.
 
 If calibrated camera parameters are available, pass them through a JSON file. Without this file, the script predicts rays with UniK3D and fits the camera parameters automatically.
 

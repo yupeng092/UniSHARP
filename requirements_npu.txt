@@ -75,6 +75,14 @@ plyfile>=1.0.3
 #   manifests under dataset_manifests. `--assets re10k wildrgbd dl3dv`
 #   invokes the respective official download routes after the user has
 #   accepted their terms. It does not bypass gated access.
+# * `--assets coco-person --coco-person-max-images 5000` downloads a public
+#   COCO 2017 person-image subset and box manifest for a future appearance or
+#   crop-augmentation stage. It is not a drop-in geometric mixed-training
+#   dataset because COCO has no target-view poses or metric depth.
+# * `--assets widerface --widerface-max-images 10000` downloads WIDER FACE
+#   train images plus face boxes for outdoor/in-the-wild face augmentation.
+#   It likewise has no multiview camera poses or metric depth, so keep it in
+#   the appearance branch rather than the geometric mixed-training loader.
 # * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
 #   release is not already packed. Build the required DL3DV per-image depth
 #   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.

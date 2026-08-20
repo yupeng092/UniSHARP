@@ -10,11 +10,13 @@ granted; it never mirrors, scrapes, or bypasses their access controls.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Iterable
 
@@ -30,6 +32,10 @@ OMNIROOMS_REPO = "Insta360-Research/OmniRooms"
 RE10K_REPO = "RE10K/RealEstate10K"
 WILDRGBD_DOWNLOADER_URL = "https://raw.githubusercontent.com/wildrgbd/wildrgbd/main/download.py"
 DL3DV_DOWNLOADER_URL = "https://raw.githubusercontent.com/DL3DV-10K/Dataset/main/scripts/download.py"
+COCO_ANNOTATIONS_URL = "https://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+COCO_IMAGE_URL_TEMPLATE = "https://images.cocodataset.org/{split}/{filename}"
+WIDER_FACE_REPO = "CUHK-CSE/wider_face"
+WIDER_FACE_PATTERNS = ("data/WIDER_train.zip", "data/WIDER_val.zip", "data/wider_face_split.zip")
 MANIFEST_REPO = OMNIROOMS_REPO
 MANIFEST_PATTERNS = ("manifests/train/*", "manifests/validation/*")
 
@@ -307,12 +313,179 @@ def _download_dl3dv(
         _write_dl3dv_manifest(target, depth_root, manifest_root)
 
 
+def _download_url(url: str, target: Path, *, dry_run: bool) -> None:
+    if dry_run:
+        print(f"would download {url} -> {target}")
+        return
+    if target.is_file() and target.stat().st_size > 0:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading {url} …")
+    urllib.request.urlretrieve(url, target)
+
+
+def _download_coco_person(
+    *,
+    target: Path,
+    manifest_root: Path,
+    split: str,
+    max_images: int,
+    dry_run: bool,
+) -> None:
+    """Download a bounded COCO-2017 person-image subset and its box manifest.
+
+    This is an appearance/augmentation corpus, not a drop-in geometric
+    UniSHARP dataset: COCO does not supply paired target views or metric depth.
+    The JSONL manifest retains the official person boxes for a later crop or
+    monocular-augmentation stage.
+    """
+    archive = target / ".archives" / "annotations_trainval2017.zip"
+    annotation = target / "annotations" / f"instances_{split}.json"
+    if dry_run:
+        count_text = "all person images" if int(max_images) == 0 else f"up to {int(max_images)} person images"
+        print(f"would download COCO {split} annotations and {count_text} into {target}")
+        return
+    _download_url(COCO_ANNOTATIONS_URL, archive, dry_run=False)
+    if not annotation.is_file():
+        with zipfile.ZipFile(archive) as package:
+            member = f"annotations/instances_{split}.json"
+            if member not in package.namelist():
+                raise RuntimeError(f"Official COCO annotation archive does not contain {member}")
+            annotation.parent.mkdir(parents=True, exist_ok=True)
+            with package.open(member) as source, annotation.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+
+    payload = json.loads(annotation.read_text(encoding="utf-8"))
+    person_category = next((item["id"] for item in payload["categories"] if item["name"] == "person"), None)
+    if person_category is None:
+        raise RuntimeError("COCO annotations contain no 'person' category")
+    boxes_by_image: dict[int, list[list[float]]] = {}
+    for item in payload["annotations"]:
+        if int(item["category_id"]) == int(person_category) and not bool(item.get("iscrowd", 0)):
+            boxes_by_image.setdefault(int(item["image_id"]), []).append([float(value) for value in item["bbox"]])
+    records = [item for item in payload["images"] if int(item["id"]) in boxes_by_image]
+    records.sort(key=lambda item: int(item["id"]))
+    if int(max_images) > 0:
+        records = records[: int(max_images)]
+    image_root = target / "images" / split
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    rows: list[str] = []
+    for index, item in enumerate(records, start=1):
+        filename = str(item["file_name"])
+        image_path = image_root / filename
+        _download_url(COCO_IMAGE_URL_TEMPLATE.format(split=split, filename=filename), image_path, dry_run=False)
+        paths.append(str(image_path.resolve()))
+        rows.append(json.dumps({"image": str(image_path.resolve()), "person_boxes_xywh": boxes_by_image[int(item["id"])]}))
+        if index % 100 == 0 or index == len(records):
+            print(f"COCO person images: {index}/{len(records)}")
+    (manifest_root / f"coco_person_{split}_images.txt").write_text("\n".join(paths) + "\n", encoding="utf-8")
+    (manifest_root / f"coco_person_{split}_boxes.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    print(f"COCO person subset prepared: {target} ({len(records)} images)")
+
+
+def _read_widerface_boxes(annotation: Path) -> list[tuple[str, list[list[float]]]]:
+    """Parse the released WIDER FACE bounding-box text format."""
+    lines = annotation.read_text(encoding="utf-8").splitlines()
+    records: list[tuple[str, list[list[float]]]] = []
+    index = 0
+    while index < len(lines):
+        relative = lines[index].strip()
+        index += 1
+        if not relative:
+            continue
+        if index >= len(lines):
+            raise RuntimeError(f"Malformed WIDER FACE annotation near {relative}")
+        count = int(lines[index].strip())
+        index += 1
+        boxes: list[list[float]] = []
+        for _ in range(count):
+            values = lines[index].split()
+            index += 1
+            if len(values) < 4:
+                raise RuntimeError(f"Malformed WIDER FACE box for {relative}")
+            boxes.append([float(value) for value in values[:4]])
+        if boxes:
+            records.append((relative, boxes))
+    return records
+
+
+def _download_widerface(
+    *,
+    token: str | None,
+    target: Path,
+    manifest_root: Path,
+    max_images: int,
+    include_val: bool,
+    dry_run: bool,
+) -> None:
+    """Fetch WIDER FACE archives and create a bounded face-box manifest.
+
+    WIDER FACE labels faces but provides neither metric depth nor target-view
+    poses.  It is therefore intentionally exported as an appearance/crop
+    augmentation corpus rather than a UniSHARP geometric training manifest.
+    """
+    selected_patterns = [WIDER_FACE_PATTERNS[0], WIDER_FACE_PATTERNS[2]]
+    if include_val:
+        selected_patterns.append(WIDER_FACE_PATTERNS[1])
+    if dry_run:
+        count_text = "all annotated images" if int(max_images) == 0 else f"up to {int(max_images)} annotated images"
+        print(f"would download {WIDER_FACE_REPO} ({', '.join(selected_patterns)}) and prepare {count_text} in {target}")
+        return
+    _, snapshot_download = _require_huggingface_hub()
+    source = target / ".hf_source"
+    print(f"Downloading WIDER FACE archives from {WIDER_FACE_REPO} …")
+    snapshot_download(
+        repo_id=WIDER_FACE_REPO,
+        repo_type="dataset",
+        allow_patterns=selected_patterns,
+        local_dir=str(source),
+        token=token,
+    )
+    for name in ("WIDER_train.zip", "WIDER_val.zip", "wider_face_split.zip"):
+        archive = source / "data" / name
+        if archive.is_file():
+            marker = target / ".extracted" / f"{name}.ok"
+            if not marker.is_file():
+                print(f"Extracting {name} …")
+                with zipfile.ZipFile(archive) as package:
+                    package.extractall(target)
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("ok\n", encoding="utf-8")
+
+    candidates: list[tuple[Path, Path]] = [
+        (target / "WIDER_train" / "images", target / "wider_face_split" / "wider_face_train_bbx_gt.txt"),
+    ]
+    if include_val:
+        candidates.append((target / "WIDER_val" / "images", target / "wider_face_split" / "wider_face_val_bbx_gt.txt"))
+    records: list[tuple[Path, list[list[float]]]] = []
+    for image_root, annotation in candidates:
+        if not image_root.is_dir() or not annotation.is_file():
+            raise RuntimeError(f"WIDER FACE extraction is incomplete: expected {image_root} and {annotation}")
+        for relative, boxes in _read_widerface_boxes(annotation):
+            image_path = image_root / relative
+            if image_path.is_file():
+                records.append((image_path.resolve(), boxes))
+    records.sort(key=lambda item: str(item[0]))
+    if int(max_images) > 0:
+        records = records[: int(max_images)]
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    image_manifest = manifest_root / "widerface_images.txt"
+    box_manifest = manifest_root / "widerface_boxes.jsonl"
+    image_manifest.write_text("\n".join(str(path) for path, _ in records) + "\n", encoding="utf-8")
+    box_manifest.write_text(
+        "\n".join(json.dumps({"image": str(path), "face_boxes_xywh": boxes}) for path, boxes in records) + "\n",
+        encoding="utf-8",
+    )
+    print(f"WIDER FACE subset prepared: {target} ({len(records)} images)")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--assets",
         nargs="+",
-        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv"),
+        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface"),
         default=("unik3d", "manifests"),
         help="Assets to download. Large datasets are always explicit options.",
     )
@@ -333,6 +506,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dl3dv-depth-root", type=Path, default=DATA_ROOT / "dl3dv_depth", help="Existing prepared DL3DV per-image depth tree; provider RGB download does not include it.")
     parser.add_argument("--dl3dv-subset", choices=("1K", "2K", "3K", "4K", "5K", "6K", "7K", "8K", "9K", "10K"), default=None)
     parser.add_argument("--dl3dv-resolution", choices=("480P", "960P", "2K", "4K"), default="960P")
+    parser.add_argument("--coco-person-root", type=Path, default=DATA_ROOT / "coco_person")
+    parser.add_argument("--coco-person-split", choices=("train2017", "val2017"), default="train2017")
+    parser.add_argument("--coco-person-max-images", type=int, default=5000, help="0 downloads every COCO image containing a non-crowd person instance.")
+    parser.add_argument("--widerface-root", type=Path, default=DATA_ROOT / "widerface")
+    parser.add_argument("--widerface-max-images", type=int, default=10000, help="0 keeps every WIDER FACE train image with a labeled face.")
+    parser.add_argument("--widerface-include-val", action="store_true", help="Also download WIDER FACE validation images and labels.")
     parser.add_argument("--token", default=None, help="Hugging Face token; defaults to HF_TOKEN if set.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned downloads without network access.")
     return parser
@@ -376,6 +555,27 @@ def main() -> None:
             manifest_root=Path(args.manifest_root),
             subset=args.dl3dv_subset,
             resolution=args.dl3dv_resolution,
+            dry_run=bool(args.dry_run),
+        )
+    if "coco-person" in assets:
+        if int(args.coco_person_max_images) < 0:
+            raise SystemExit("--coco-person-max-images must be >= 0.")
+        _download_coco_person(
+            target=Path(args.coco_person_root),
+            manifest_root=Path(args.manifest_root),
+            split=str(args.coco_person_split),
+            max_images=int(args.coco_person_max_images),
+            dry_run=bool(args.dry_run),
+        )
+    if "widerface" in assets:
+        if int(args.widerface_max_images) < 0:
+            raise SystemExit("--widerface-max-images must be >= 0.")
+        _download_widerface(
+            token=token,
+            target=Path(args.widerface_root),
+            manifest_root=Path(args.manifest_root),
+            max_images=int(args.widerface_max_images),
+            include_val=bool(args.widerface_include_val),
             dry_run=bool(args.dry_run),
         )
 

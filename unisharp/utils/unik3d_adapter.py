@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -320,9 +321,29 @@ def load_unik3d_model(
     _ = _try_import_unik3d()
     _setup_unik3d_repo_caches(cache_root=cache_root)
     try:
-        from hubconf import UniK3D as UniK3DHub  # type: ignore
+        # Build from the vendored evaluation configuration.  The current
+        # UniK3D hubconf still points to an older ``configs/config_*.json``
+        # layout, while this checkout stores ``configs/eval/<backbone>.json``.
+        # Loading it here also keeps the model fully offline once cached.
+        unik3d_root = _get_ml_unisharp_root() / "UniK3D"
+        config_path = unik3d_root / "configs" / "eval" / f"{backbone}.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Missing UniK3D evaluation config: {config_path}")
+        from huggingface_hub import hf_hub_download
+        from unik3d.models import UniK3D  # type: ignore
 
-        model = UniK3DHub(backbone=backbone, pretrained=pretrained, config_variant="eval", cache_root=cache_root)
+        with config_path.open("r", encoding="utf-8") as handle:
+            model = UniK3D(json.load(handle))
+        if pretrained:
+            weights_path = hf_hub_download(
+                repo_id=f"lpiccinelli/unik3d-{backbone}",
+                filename="pytorch_model.bin",
+                repo_type="model",
+                cache_dir=str((cache_root or (_get_ml_unisharp_root() / "UniK3D" / "checkpoints")) / "huggingface"),
+                local_files_only=os.environ.get("HF_HUB_OFFLINE", "").strip().upper() in {"1", "ON", "YES", "TRUE"},
+            )
+            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+            model.load_state_dict(state_dict, strict=False)
     except Exception as exc:
         if os.environ.get("HF_HUB_OFFLINE", "").strip() in {"1", "ON", "YES", "TRUE"}:
             raise RuntimeError("UniK3D local/offline load failed; refusing to fall back to HuggingFace Hub.") from exc
@@ -591,4 +612,3 @@ def infer_unik3d_pinhole(
     with torch.autocast(device_type=dev.type, enabled=False):
         out = forward_unik3d_pinhole(model, rgb_u8, intrinsics=intrinsics, normalize=True)
     return out
-
