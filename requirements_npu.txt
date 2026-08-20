@@ -83,6 +83,10 @@ plyfile>=1.0.3
 #   train images plus face boxes for outdoor/in-the-wild face augmentation.
 #   It likewise has no multiview camera poses or metric depth, so keep it in
 #   the appearance branch rather than the geometric mixed-training loader.
+# * `train_npu_portrait_portable.sh` and its `_ddp` counterpart consume the
+#   COCO/WIDER JSONL box manifests directly and require calibrated FaceScape
+#   and MVHumanNet scene JSONL manifests. The latter use frames with OpenCV
+#   w2c matrices and pixel intrinsics, providing the target-view geometry.
 # * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
 #   release is not already packed. Build the required DL3DV per-image depth
 #   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.

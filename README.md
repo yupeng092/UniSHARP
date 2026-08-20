@@ -215,6 +215,24 @@ python scripts/download_npu_assets.py \
 python scripts/download_npu_assets.py \
   --assets widerface \
   --widerface-max-images 10000
+
+# Portrait/outdoor NPU pre-training: COCO and WIDER FACE are box-guided
+# single-view appearance batches. FaceScape and MVHumanNet supply calibrated
+# target views and must first be converted to the JSONL format below.
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export FACESCAPE_MANIFEST="$DATASET_MANIFEST_DIR/facescape_train.jsonl"
+export MVHUMANNET_MANIFEST="$DATASET_MANIFEST_DIR/mvhumannet_train.jsonl"
+UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+
+# Single-node multi-card variant.
+NPU_IDS=0,1,2,3 UNIK3D_BACKBONE=vitb bash scripts/train_npu_portrait_portable_ddp.sh
+
+# Calibrated human JSONL schema (one scene per line). `w2c` uses OpenCV
+# world-to-camera convention and intrinsics are pixel 3x3 matrices.
+{"scene":"subject/expression","frames":[
+  {"image":"/data/face/000.jpg","intrinsics":[[fx,0,cx],[0,fy,cy],[0,0,1]],"w2c":[[...],[...],[...],[0,0,0,1]]},
+  {"image":"/data/face/001.jpg","intrinsics":[[fx,0,cx],[0,fy,cy],[0,0,1]],"w2c":[[...],[...],[...],[0,0,0,1]]}
+]}
 # Convert RE10K frames/cameras, then generate DL3DV pseudo z-depth on the NPU.
 python scripts/prepare_re10k_chunks.py \
   --source-root /path/to/re10k_frames_and_metadata \

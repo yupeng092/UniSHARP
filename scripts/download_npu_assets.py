@@ -480,12 +480,36 @@ def _download_widerface(
     print(f"WIDER FACE subset prepared: {target} ({len(records)} images)")
 
 
+def _prepare_restricted_human_dataset(*, name: str, target: Path, manifest_root: Path, dry_run: bool) -> None:
+    """Prepare a manifest schema for datasets released only after approval.
+
+    FaceScape and MVHumanNet use participant data and provider terms. Their
+    archives must be obtained from the provider after approval; this helper
+    deliberately does not mirror or guess private download URLs.
+    """
+    if dry_run:
+        print(f"would prepare {name} integration under {target}; download the provider-authorized archives separately")
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    template = manifest_root / f"{name.lower()}_train.template.jsonl"
+    if not template.exists():
+        template.write_text(
+            '{"scene":"subject/expression","frames":[{"image":"/absolute/path/frame0.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},{"image":"/absolute/path/frame1.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0.1],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}]}\n',
+            encoding="utf-8",
+        )
+    print(
+        f"{name}: place provider-authorized files under {target}, convert its camera metadata to "
+        f"{template.name}, then save the completed manifest as {name.lower()}_train.jsonl."
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--assets",
         nargs="+",
-        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface"),
+        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "facescape", "mvhumannet"),
         default=("unik3d", "manifests"),
         help="Assets to download. Large datasets are always explicit options.",
     )
@@ -512,6 +536,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--widerface-root", type=Path, default=DATA_ROOT / "widerface")
     parser.add_argument("--widerface-max-images", type=int, default=10000, help="0 keeps every WIDER FACE train image with a labeled face.")
     parser.add_argument("--widerface-include-val", action="store_true", help="Also download WIDER FACE validation images and labels.")
+    parser.add_argument("--facescape-root", type=Path, default=DATA_ROOT / "facescape")
+    parser.add_argument("--mvhumannet-root", type=Path, default=DATA_ROOT / "mvhumannet")
     parser.add_argument("--token", default=None, help="Hugging Face token; defaults to HF_TOKEN if set.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned downloads without network access.")
     return parser
@@ -577,6 +603,14 @@ def main() -> None:
             max_images=int(args.widerface_max_images),
             include_val=bool(args.widerface_include_val),
             dry_run=bool(args.dry_run),
+        )
+    if "facescape" in assets:
+        _prepare_restricted_human_dataset(
+            name="FaceScape", target=Path(args.facescape_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run)
+        )
+    if "mvhumannet" in assets:
+        _prepare_restricted_human_dataset(
+            name="MVHumanNet", target=Path(args.mvhumannet_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run)
         )
 
 
