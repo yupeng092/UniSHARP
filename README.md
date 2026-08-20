@@ -373,12 +373,12 @@ UniSHARP Gaussian prediction, and export convention, without importing CUDA
 rendering dependencies. It writes `gaussians.pt`, `metadata.json`, and optional
 `gaussians.ply` for every input image.
 
-For perspective images, add `--render-multiview` to execute the CPU port of
-the native `scripts/infer_unisharp.py` multiview branch. It uses the same
-source-to-world conversion, adaptive close-scene motion, 10-frame forward
-trajectory, 10-frame orbit trajectory, alpha compositing, sRGB conversion,
-and 5% border crop. The output is saved under each image's `multiview/`
-directory as `forward.gif`, `rotate.gif`, and render metadata:
+Add `--render-multiview` to use the CPU reference version of UniSHARP's native
+perspective `GSplatRenderer` branch. It uses the same source-to-world
+conversion, depth-adaptive forward/orbit trajectories, black background, alpha
+normalisation, sRGB conversion, and 5% output crop as
+`scripts/infer_unisharp.py`. It writes `forward.gif`, `rotate.gif`, and render
+metadata under each image's `multiview/` directory:
 
 ```bash
 python scripts/infer_unisharp_cpu.py \
@@ -390,11 +390,44 @@ python scripts/infer_unisharp_cpu.py \
   --render-multiview
 ```
 
-The CPU renderer is a PyTorch reference implementation of the native gsplat
-pinhole operation, rather than the CUDA gsplat kernel itself. Fisheye and
-panorama inputs still run the complete CPU prediction/export path but skip
-multiview rendering because their native paths use CUDA-only renderers. Use
-`scripts/infer_unisharp.py` for those camera types on CUDA.
+The CPU reference follows gsplat classic math but cannot be bit-identical to
+CUDA gsplat. Fisheye and panorama rendering remain CUDA-only. By default the
+GIFs use the resized inference resolution; set both `--render-width` and
+`--render-height` to select another resolution while preserving field of view.
+For example:
+
+```bash
+python scripts/infer_unisharp_cpu.py \
+  --checkpoint /path/to/step_XXXXXXX.pt \
+  --image /path/to/perspective.jpg \
+  --max-long-edge 768 \
+  --render-multiview \
+  --render-width 1536 \
+  --render-height 1024
+```
+
+### Flash3D-compatible standalone CPU rendering
+
+`scripts/render_unisharp_cpu.py` is the Flash3D-compatible standalone entry
+point. It forwards the full interface of
+`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`, so it produces the same
+`cross5` views, RGB/alpha/depth folders, comparison grid and report for an
+exported UniSHARP `gaussians.pt` file:
+
+```bash
+python scripts/render_unisharp_cpu.py \
+  --gaussians outputs/cpu_inference/sample/gaussians.pt \
+  --output outputs/flash3d_render \
+  --backend torch \
+  --rig cross5 \
+  --height 256 \
+  --width 384 \
+  --use-source-intrinsics \
+  --linear-to-srgb
+```
+
+Use `--flash3d-root D:/PythonFiles/flash3d-main` only when Flash3D is located
+elsewhere.
 
 If calibrated camera parameters are available, pass them through a JSON file. Without this file, the script predicts rays with UniK3D and fits the camera parameters automatically.
 

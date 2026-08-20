@@ -3,11 +3,9 @@ from __future__ import annotations
 """CPU-only UniSHARP Gaussian prediction and native-style pinhole rendering.
 
 This script intentionally does not import gsplat, Triton, or the 3DGEER CUDA
-rasterizer.  Its CPU multiview branch mirrors the perspective branch of
-``scripts/infer_unisharp.py``: source-to-world conversion, adaptive forward
-and orbit trajectories, black-background alpha compositing, sRGB conversion,
-and five-percent output cropping.  The rasterizer itself is the project's
-PyTorch ``PortableGaussianRenderer`` reference implementation.
+rasterizer. Its optional CPU multiview branch mirrors the perspective branch
+of ``scripts/infer_unisharp.py`` using the project's gsplat-classic PyTorch
+reference implementation.
 """
 
 import argparse
@@ -577,137 +575,73 @@ def _focal_for_ply(
 
 
 def _to_u8_hwc(image_chw: torch.Tensor) -> np.ndarray:
-    """Match the native inference script's image conversion."""
-    if image_chw.dtype == torch.uint8:
-        return image_chw.permute(1, 2, 0).detach().cpu().numpy()
     image_f = image_chw.detach().to(torch.float32).clamp(0.0, 1.0)
     return (image_f * 255.0).round().to(torch.uint8).permute(1, 2, 0).cpu().numpy()
 
 
-def _crop_border_u8(frame: np.ndarray, fraction: float) -> np.ndarray:
-    """Copy of the native output-frame crop helper."""
-    if float(fraction) <= 0.0 or frame.ndim < 2:
-        return frame
-    height, width = int(frame.shape[0]), int(frame.shape[1])
-    crop_y = int(round(float(height) * float(fraction)))
-    crop_x = int(round(float(width) * float(fraction)))
-    if crop_y <= 0 and crop_x <= 0:
-        return frame
+def _save_gif(frames: list[np.ndarray], output: Path) -> None:
+    if not frames:
+        raise ValueError(f"No frames to save for {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    images = [Image.fromarray(frame) for frame in frames]
+    images[0].save(output, save_all=True, append_images=images[1:], duration=GIF_DURATION_MS, loop=0, disposal=2)
+
+
+def _crop_native_border(frame: np.ndarray) -> np.ndarray:
+    height, width = frame.shape[:2]
+    crop_y, crop_x = int(round(height * 0.05)), int(round(width * 0.05))
     if crop_y * 2 >= height or crop_x * 2 >= width:
         return frame
     return frame[crop_y : height - crop_y, crop_x : width - crop_x].copy()
 
 
-def _save_gif(frames: list[np.ndarray], output: Path, duration_ms: int) -> None:
-    if not frames:
-        raise ValueError(f"No frames to save for {output}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pil_frames = [Image.fromarray(frame) for frame in frames]
-    pil_frames[0].save(
-        output,
-        save_all=True,
-        append_images=pil_frames[1:],
-        duration=int(duration_ms),
-        loop=0,
-        disposal=2,
-    )
+def _scale_render_intrinsics(intrinsics: torch.Tensor, source_h: int, source_w: int, output_h: int, output_w: int) -> torch.Tensor:
+    result = intrinsics.detach().to(torch.float32).clone()
+    result[..., 0, 0] *= float(output_w) / float(source_w)
+    result[..., 0, 2] *= float(output_w) / float(source_w)
+    result[..., 1, 1] *= float(output_h) / float(source_h)
+    result[..., 1, 2] *= float(output_h) / float(source_h)
+    return result
 
 
-def _build_forward_poses(num_views: int, distance_m: float, device: torch.device) -> list[torch.Tensor]:
-    poses: list[torch.Tensor] = []
-    r_c2w = torch.eye(3, dtype=torch.float32, device=device)
-    views = max(1, int(num_views))
-    for index in range(views):
-        alpha = float(index + 1) / float(views)
-        eye = torch.tensor([0.0, 0.0, float(distance_m) * alpha], dtype=torch.float32, device=device)
-        poses.append(build_extrinsics_w2c(r_c2w, eye, "c2w"))
-    return poses
-
-
-def _build_rotate_poses(num_views: int, radius_m: float, device: torch.device) -> list[torch.Tensor]:
-    poses: list[torch.Tensor] = []
-    r_c2w = torch.eye(3, dtype=torch.float32, device=device)
-    views = max(1, int(num_views))
-    for index in range(views):
-        theta = -2.0 * math.pi * float(index) / float(views)
-        eye = torch.tensor(
-            [float(radius_m) * math.sin(theta), float(radius_m) * math.cos(theta), 0.0],
-            dtype=torch.float32,
-            device=device,
-        )
-        poses.append(build_extrinsics_w2c(r_c2w, eye, "c2w"))
-    return poses
-
-
-def _predicted_depth_samples_m(model_output: dict[str, Any]) -> torch.Tensor | None:
-    depth = model_output.get("unik3d_distance")
+def _view_motion(aux: dict[str, torch.Tensor], gaussians: Gaussians3D) -> tuple[float, float]:
+    depth = aux.get("unik3d_distance")
     if not torch.is_tensor(depth):
-        layers = model_output.get("distance_layers")
-        if torch.is_tensor(layers) and layers.ndim >= 4 and int(layers.shape[1]) >= 1:
-            depth = layers[:, 0:1]
-    if torch.is_tensor(depth) and depth.numel() > 0:
-        values = depth.detach().reshape(-1).to(torch.float32)
-        valid = values[torch.isfinite(values) & (values > 1e-3) & (values < 1e4)]
-        if int(valid.numel()) > 0:
-            return valid
-    gaussians = model_output.get("gaussians")
-    if isinstance(gaussians, Gaussians3D):
-        values = gaussians.mean_vectors.detach().reshape(-1, 3)[..., 2].to(torch.float32)
-        valid = values[torch.isfinite(values) & (values > 1e-3) & (values < 1e4)]
-        if int(valid.numel()) > 0:
-            return valid
-    return None
-
-
-def _adaptive_view_motion_distances(
-    model_output: dict[str, Any],
-    *,
-    default_forward_m: float,
-    default_radius_m: float,
-) -> tuple[float, float, float | None, float, float | None, float | None]:
-    """Copy of the native near-scene motion safeguard."""
-    valid = _predicted_depth_samples_m(model_output)
-    if valid is None or int(valid.numel()) == 0:
-        effective_depth_m = median_depth_m = foreground_depth_m = None
-    else:
-        median_depth_m = float(torch.median(valid).item())
-        foreground_depth_m = float(torch.quantile(valid, VIEW_MOTION_FOREGROUND_DEPTH_QUANTILE).item())
-        effective_depth_m = (
-            median_depth_m
-            if median_depth_m >= VIEW_MOTION_FAR_SCENE_MEDIAN_M
-            else min(median_depth_m, foreground_depth_m)
-        )
-    if (
-        effective_depth_m is None
-        or not math.isfinite(effective_depth_m)
-        or effective_depth_m >= VIEW_MOTION_NEAR_SCENE_DEPTH_M
-    ):
-        return default_forward_m, default_radius_m, effective_depth_m, 1.0, median_depth_m, foreground_depth_m
-    scale = max(VIEW_MOTION_MIN_SCALE, effective_depth_m / VIEW_MOTION_NEAR_SCENE_DEPTH_M)
-    forward_m = min(default_forward_m * scale, effective_depth_m * VIEW_MOTION_FORWARD_DEPTH_FRAC)
-    radius_m = min(default_radius_m * scale, effective_depth_m * VIEW_MOTION_ROTATE_DEPTH_FRAC)
-    return forward_m, radius_m, effective_depth_m, scale, median_depth_m, foreground_depth_m
-
-
-def _render_pinhole_frame_cpu(
-    renderer: PortableGaussianRenderer,
-    gaussians: Gaussians3D,
-    *,
-    extr_w2c: torch.Tensor,
-    intrinsics: torch.Tensor,
-    image_h: int,
-    image_w: int,
-) -> np.ndarray:
-    """CPU equivalent of ``_render_pinhole_frame`` in infer_unisharp.py."""
-    output = renderer(
-        gaussians,
-        extrinsics=extr_w2c[None],
-        intrinsics=intrinsics[None],
-        image_width=int(image_w),
-        image_height=int(image_h),
+        layers = aux.get("distance_layers")
+        depth = layers[:, 0:1] if torch.is_tensor(layers) and layers.ndim >= 4 else None
+    values = depth.reshape(-1).float() if torch.is_tensor(depth) else gaussians.mean_vectors[..., 2].reshape(-1).float()
+    values = values[torch.isfinite(values) & (values > 1e-3) & (values < 1e4)]
+    if not int(values.numel()):
+        return FORWARD_DISTANCE_M, ROTATE_RADIUS_M
+    median = float(torch.median(values).item())
+    foreground = float(torch.quantile(values, VIEW_MOTION_FOREGROUND_DEPTH_QUANTILE).item())
+    effective = median if median >= VIEW_MOTION_FAR_SCENE_MEDIAN_M else min(median, foreground)
+    if effective >= VIEW_MOTION_NEAR_SCENE_DEPTH_M:
+        return FORWARD_DISTANCE_M, ROTATE_RADIUS_M
+    scale = max(VIEW_MOTION_MIN_SCALE, effective / VIEW_MOTION_NEAR_SCENE_DEPTH_M)
+    return (
+        min(FORWARD_DISTANCE_M * scale, effective * VIEW_MOTION_FORWARD_DEPTH_FRAC),
+        min(ROTATE_RADIUS_M * scale, effective * VIEW_MOTION_ROTATE_DEPTH_FRAC),
     )
-    alpha = output.alpha.detach().to(torch.float32).clamp(0.0, 1.0)
-    rgb = linearRGB2sRGB((output.color / alpha.clamp(min=1e-4)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+
+
+def _native_poses(forward_m: float, orbit_m: float, device: torch.device) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    rotation = torch.eye(3, dtype=torch.float32, device=device)
+    forward = [
+        build_extrinsics_w2c(rotation, torch.tensor([0.0, 0.0, forward_m * (index + 1) / FORWARD_VIEWS], device=device), "c2w")
+        for index in range(FORWARD_VIEWS)
+    ]
+    orbit = []
+    for index in range(ROTATE_VIEWS):
+        angle = -2.0 * math.pi * index / ROTATE_VIEWS
+        eye = torch.tensor([orbit_m * math.sin(angle), orbit_m * math.cos(angle), 0.0], dtype=torch.float32, device=device)
+        orbit.append(build_extrinsics_w2c(rotation, eye, "c2w"))
+    return forward, orbit
+
+
+def _render_native_frame(renderer: PortableGaussianRenderer, gaussians: Gaussians3D, pose: torch.Tensor, k3: torch.Tensor, height: int, width: int) -> np.ndarray:
+    output = renderer(gaussians, extrinsics=pose[None], intrinsics=k3[None], image_width=width, image_height=height)
+    rgb = linearRGB2sRGB((output.color / output.alpha.clamp(min=1e-4)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
     return _to_u8_hwc(rgb[0])
 
 
@@ -721,86 +655,30 @@ def _render_multiview_cpu(
     image_h: int,
     image_w: int,
 ) -> Path | None:
-    """CPU port of UniSHARP's native perspective multiview inference branch."""
+    """CPU implementation of UniSHARP's ``GSplatRenderer`` perspective branch."""
     if not bool(args.render_multiview):
         return None
     if camera_kind != "perspective" or intrinsics is None:
-        LOGGER.warning(
-            "Skipping CPU multiview rendering for %s input: the native fisheye/"
-            "panorama render paths require CUDA-specific renderers. gaussians.pt was still exported.",
-            camera_kind,
-        )
+        LOGGER.warning("CPU gsplat-compatible multiview supports perspective cameras only; exported gaussians.pt is unchanged.")
         return None
-
-    render_threads = int(args.render_threads) if int(args.render_threads) > 0 else int(args.threads)
-    if render_threads > 0:
-        torch.set_num_threads(render_threads)
-    render_h = int(args.render_height) or int(image_h)
-    render_w = int(args.render_width) or int(image_w)
-    if (render_h, render_w) != (int(image_h), int(image_w)):
-        LOGGER.warning("Custom render resolution changes the native inference output geometry: %dx%d -> %dx%d", image_w, image_h, render_w, render_h)
-
+    threads = int(args.render_threads) if int(args.render_threads) > 0 else int(args.threads)
+    if threads > 0:
+        torch.set_num_threads(threads)
+    output_h = int(args.render_height) or int(image_h)
+    output_w = int(args.render_width) or int(image_w)
     device = gaussians.mean_vectors.device
-    src_w2c = torch.eye(4, dtype=torch.float32, device=device)
-    gaussians_world = transform_gaussians_to_world(gaussians, src_w2c)
-    motion_input: dict[str, Any] = dict(aux)
-    motion_input["gaussians"] = gaussians_world
-    forward_m, radius_m, scene_depth_m, motion_scale, median_depth_m, foreground_depth_m = _adaptive_view_motion_distances(
-        motion_input,
-        default_forward_m=FORWARD_DISTANCE_M,
-        default_radius_m=ROTATE_RADIUS_M,
-    )
-    if motion_scale < 0.999:
-        LOGGER.info(
-            "Near-scene view motion | depth_eff=%.3fm median=%.3fm p25=%.3fm scale=%.3f forward=%.3fm orbit=%.3fm",
-            float(scene_depth_m) if scene_depth_m is not None else float("nan"),
-            float(median_depth_m) if median_depth_m is not None else float("nan"),
-            float(foreground_depth_m) if foreground_depth_m is not None else float("nan"),
-            motion_scale,
-            forward_m,
-            radius_m,
-        )
-    renderer = PortableGaussianRenderer(
-        background_color="black",
-        low_pass_filter_eps=float(args.low_pass_filter_eps),
-    ).to(device)
-    k3 = intrinsics.detach().to(device=device, dtype=torch.float32)[0]
-    forward_frames = [
-        _render_pinhole_frame_cpu(renderer, gaussians_world, extr_w2c=pose, intrinsics=k3, image_h=render_h, image_w=render_w)
-        for pose in _build_forward_poses(FORWARD_VIEWS, forward_m, device)
-    ]
-    rotate_frames = [
-        _render_pinhole_frame_cpu(renderer, gaussians_world, extr_w2c=pose, intrinsics=k3, image_h=render_h, image_w=render_w)
-        for pose in _build_rotate_poses(ROTATE_VIEWS, radius_m, device)
-    ]
-    # Native perspective inference crops the peripheral border before GIF encoding.
-    forward_frames = [_crop_border_u8(frame, 0.05) for frame in forward_frames]
-    rotate_frames = [_crop_border_u8(frame, 0.05) for frame in rotate_frames]
+    world = transform_gaussians_to_world(gaussians, torch.eye(4, dtype=torch.float32, device=device))
+    forward_m, orbit_m = _view_motion(aux, world)
+    k3 = _scale_render_intrinsics(intrinsics, image_h, image_w, output_h, output_w).to(device=device)[0]
+    renderer = PortableGaussianRenderer(background_color="black", low_pass_filter_eps=float(args.low_pass_filter_eps)).to(device)
+    forward_poses, orbit_poses = _native_poses(forward_m, orbit_m, device)
+    forward_frames = [_crop_native_border(_render_native_frame(renderer, world, pose, k3, output_h, output_w)) for pose in forward_poses]
+    orbit_frames = [_crop_native_border(_render_native_frame(renderer, world, pose, k3, output_h, output_w)) for pose in orbit_poses]
     render_dir = sample_dir / "multiview"
-    _save_gif(forward_frames, render_dir / "forward.gif", GIF_DURATION_MS)
-    _save_gif(rotate_frames, render_dir / "rotate.gif", GIF_DURATION_MS)
+    _save_gif(forward_frames, render_dir / "forward.gif")
+    _save_gif(orbit_frames, render_dir / "rotate.gif")
     (render_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "renderer": "unisharp_native_pinhole_cpu_port",
-                "rasterizer": "unisharp.utils.portable_renderer.PortableGaussianRenderer",
-                "forward_views": FORWARD_VIEWS,
-                "rotate_views": ROTATE_VIEWS,
-                "forward_distance_m": forward_m,
-                "rotate_radius_m": radius_m,
-                "scene_depth_for_motion_m": scene_depth_m,
-                "median_predicted_depth_m": median_depth_m,
-                "foreground_depth_p25_m": foreground_depth_m,
-                "view_motion_scale": motion_scale,
-                "low_pass_filter_eps": float(args.low_pass_filter_eps),
-                "output_crop_border_fraction": 0.05,
-                "height": render_h,
-                "width": render_w,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
+        json.dumps({"renderer": "unisharp_gsplat_cpu_reference", "forward_distance_m": forward_m, "rotate_radius_m": orbit_m, "height": output_h, "width": output_w, "low_pass_filter_eps": float(args.low_pass_filter_eps)}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return render_dir
@@ -848,9 +726,6 @@ def _process_one(
         intrinsics=intrinsics,
         camera_params=camera_params,
         distance_init_cap_m=float(args.distance_init_cap_m),
-        # Native multiview inference uses UniK3D distance to shorten motion in
-        # close scenes.  Keep it in memory even when the user does not request
-        # auxiliary tensors in the exported checkpoint.
         save_aux=bool(args.save_aux) or bool(args.render_multiview),
     )
     gaussian_tensors = _gaussians_to_cpu_dict(gaussians)
@@ -1012,13 +887,7 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--render-multiview",
         action="store_true",
-        help="Render native UniSHARP-style pinhole forward/orbit GIFs with the CPU reference rasterizer.",
-    )
-    parser.add_argument(
-        "--render-rig",
-        choices=["cross5", "arc5", "grid9"],
-        default=None,
-        help="Deprecated Flash3D option, accepted for command compatibility and ignored.",
+        help="Render UniSHARP-native forward/orbit views with the gsplat CPU reference path.",
     )
     parser.add_argument("--render-height", type=int, default=0, help="0 reuses the inference image height.")
     parser.add_argument("--render-width", type=int, default=0, help="0 reuses the inference image width.")
@@ -1026,7 +895,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--low-pass-filter-eps",
         type=float,
         default=0.0,
-        help="Matches scripts/infer_unisharp.py; 0.0 is its native inference default.",
+        help="Matches UniSHARP GPU inference's GSplatRenderer default.",
     )
     parser.add_argument(
         "--render-threads",
@@ -1048,10 +917,6 @@ def main() -> None:
         raise ValueError("Set both --render-height and --render-width, or leave both at 0.")
     if float(args.low_pass_filter_eps) < 0.0:
         raise ValueError("--low-pass-filter-eps must be >= 0.")
-    if args.render_rig is not None:
-        LOGGER.warning(
-            "--render-rig is ignored: native UniSHARP multiview always renders 10 forward and 10 orbit frames."
-        )
     if int(args.threads) > 0:
         torch.set_num_threads(int(args.threads))
     torch.set_float32_matmul_precision("high")
