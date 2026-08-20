@@ -480,27 +480,30 @@ def _download_widerface(
     print(f"WIDER FACE subset prepared: {target} ({len(records)} images)")
 
 
-def _prepare_restricted_human_dataset(*, name: str, target: Path, manifest_root: Path, dry_run: bool) -> None:
-    """Prepare a manifest schema for datasets released only after approval.
+def _prepare_calibrated_human_dataset(
+    *, name: str, slug: str, target: Path, manifest_root: Path, source_url: str, preparation: str, dry_run: bool
+) -> None:
+    """Prepare a local integration point for licensed calibrated human data.
 
-    FaceScape and MVHumanNet use participant data and provider terms. Their
-    archives must be obtained from the provider after approval; this helper
-    deliberately does not mirror or guess private download URLs.
+    This intentionally never guesses archive URLs or bypasses a dataset's
+    registration, research-use, or non-commercial terms.  It records the
+    common JSONL contract used by the mixed UniSHARP loader instead.
     """
     if dry_run:
-        print(f"would prepare {name} integration under {target}; download the provider-authorized archives separately")
+        print(f"would prepare {name} integration under {target}; get it from {source_url}")
         return
     target.mkdir(parents=True, exist_ok=True)
     manifest_root.mkdir(parents=True, exist_ok=True)
-    template = manifest_root / f"{name.lower()}_train.template.jsonl"
+    template = manifest_root / f"{slug}_train.template.jsonl"
     if not template.exists():
         template.write_text(
             '{"scene":"subject/expression","frames":[{"image":"/absolute/path/frame0.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},{"image":"/absolute/path/frame1.jpg","intrinsics":[[1000,0,512],[0,1000,512],[0,0,1]],"w2c":[[1,0,0,0.1],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}]}\n',
             encoding="utf-8",
         )
     print(
-        f"{name}: place provider-authorized files under {target}, convert its camera metadata to "
-        f"{template.name}, then save the completed manifest as {name.lower()}_train.jsonl."
+        f"{name}: get the approved release from {source_url}, place it under {target}, then {preparation} "
+        f"Convert the resulting RGB frames and OpenCV camera metadata to {template.name}; save the completed "
+        f"manifest as {slug}_train.jsonl."
     )
 
 
@@ -509,7 +512,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--assets",
         nargs="+",
-        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "facescape", "mvhumannet"),
+        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "humbi", "nersemble", "aistpp", "thuman"),
         default=("unik3d", "manifests"),
         help="Assets to download. Large datasets are always explicit options.",
     )
@@ -536,8 +539,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--widerface-root", type=Path, default=DATA_ROOT / "widerface")
     parser.add_argument("--widerface-max-images", type=int, default=10000, help="0 keeps every WIDER FACE train image with a labeled face.")
     parser.add_argument("--widerface-include-val", action="store_true", help="Also download WIDER FACE validation images and labels.")
-    parser.add_argument("--facescape-root", type=Path, default=DATA_ROOT / "facescape")
-    parser.add_argument("--mvhumannet-root", type=Path, default=DATA_ROOT / "mvhumannet")
+    parser.add_argument("--humbi-root", type=Path, default=DATA_ROOT / "humbi")
+    parser.add_argument("--nersemble-root", type=Path, default=DATA_ROOT / "nersemble")
+    parser.add_argument("--aistpp-root", type=Path, default=DATA_ROOT / "aistpp")
+    parser.add_argument("--thuman-root", type=Path, default=DATA_ROOT / "thuman")
     parser.add_argument("--token", default=None, help="Hugging Face token; defaults to HF_TOKEN if set.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned downloads without network access.")
     return parser
@@ -604,13 +609,33 @@ def main() -> None:
             include_val=bool(args.widerface_include_val),
             dry_run=bool(args.dry_run),
         )
-    if "facescape" in assets:
-        _prepare_restricted_human_dataset(
-            name="FaceScape", target=Path(args.facescape_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run)
+    if "humbi" in assets:
+        _prepare_calibrated_human_dataset(
+            name="HUMBI", slug="humbi", target=Path(args.humbi_root), manifest_root=Path(args.manifest_root),
+            source_url="https://github.com/zhixuany/HUMBI",
+            preparation="use its provided intrinsic/extrinsic calibration files for synchronized camera views.",
+            dry_run=bool(args.dry_run),
         )
-    if "mvhumannet" in assets:
-        _prepare_restricted_human_dataset(
-            name="MVHumanNet", target=Path(args.mvhumannet_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run)
+    if "nersemble" in assets:
+        _prepare_calibrated_human_dataset(
+            name="NeRSemble", slug="nersemble", target=Path(args.nersemble_root), manifest_root=Path(args.manifest_root),
+            source_url="https://github.com/tobias-kirschstein/nersemble",
+            preparation="request access and retain the release's calibrated synchronized head-camera views.",
+            dry_run=bool(args.dry_run),
+        )
+    if "aistpp" in assets:
+        _prepare_calibrated_human_dataset(
+            name="AIST++", slug="aistpp", target=Path(args.aistpp_root), manifest_root=Path(args.manifest_root),
+            source_url="https://google.github.io/aistplusplus_dataset/download.html",
+            preparation="run the official downloader, then pair synchronized camera views using the published calibration.",
+            dry_run=bool(args.dry_run),
+        )
+    if "thuman" in assets:
+        _prepare_calibrated_human_dataset(
+            name="THuman", slug="thuman", target=Path(args.thuman_root), manifest_root=Path(args.manifest_root),
+            source_url="https://github.com/ytrock/THuman2.0-Dataset",
+            preparation="render each approved scan into at least two views and write the renderer's OpenCV w2c matrices and pixel intrinsics.",
+            dry_run=bool(args.dry_run),
         )
 
 

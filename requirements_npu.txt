@@ -79,14 +79,17 @@ plyfile>=1.0.3
 #   COCO 2017 person-image subset and box manifest for a future appearance or
 #   crop-augmentation stage. It is not a drop-in geometric mixed-training
 #   dataset because COCO has no target-view poses or metric depth.
-# * `--assets widerface --widerface-max-images 10000` downloads WIDER FACE
-#   train images plus face boxes for outdoor/in-the-wild face augmentation.
-#   It likewise has no multiview camera poses or metric depth, so keep it in
-#   the appearance branch rather than the geometric mixed-training loader.
+# * The high-quality portrait/outdoor recipe uses COCO Person for real outdoor
+#   appearance plus HUMBI and NeRSemble for calibrated multi-view geometry.
+#   `--assets humbi nersemble aistpp thuman` creates local directories and
+#   JSONL templates; it deliberately does not bypass source registrations or
+#   research/non-commercial licenses. AIST++ and THuman are optional pose and
+#   rendered-cloth supplements.
 # * `train_npu_portrait_portable.sh` and its `_ddp` counterpart consume the
-#   COCO/WIDER JSONL box manifests directly and require calibrated FaceScape
-#   and MVHumanNet scene JSONL manifests. The latter use frames with OpenCV
-#   w2c matrices and pixel intrinsics, providing the target-view geometry.
+#   COCO JSONL box manifest directly and require calibrated HUMBI/NeRSemble
+#   scene JSONL manifests. AIST++/THuman JSONL is only required when its
+#   corresponding weight is nonzero. Calibrated rows use OpenCV w2c matrices
+#   and pixel intrinsics, providing target-view geometry.
 # * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
 #   release is not already packed. Build the required DL3DV per-image depth
 #   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.

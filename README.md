@@ -209,20 +209,25 @@ python scripts/download_npu_assets.py \
   --coco-person-split train2017 \
   --coco-person-max-images 5000
 
-# Face-in-the-wild corpus: includes outdoor/event scenes and face boxes.
-# WIDER FACE train archives are about 1.5 GB; only the first 10k sorted
-# annotated images are listed in the augmentation manifest by default.
+# Prepare the selected calibrated multi-view integrations. This creates their
+# local directories and JSONL templates. Download each provider-approved
+# archive separately; the command never bypasses registrations or licenses.
 python scripts/download_npu_assets.py \
-  --assets widerface \
-  --widerface-max-images 10000
+  --assets humbi nersemble aistpp thuman
 
-# Portrait/outdoor NPU pre-training: COCO and WIDER FACE are box-guided
-# single-view appearance batches. FaceScape and MVHumanNet supply calibrated
-# target views and must first be converted to the JSONL format below.
+# Portrait/outdoor NPU pre-training: COCO provides real outdoor-person
+# appearance; HUMBI and NeRSemble are the default calibrated face/body and
+# head geometry datasets. AIST++ and THuman are opt-in supplements.
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
-export FACESCAPE_MANIFEST="$DATASET_MANIFEST_DIR/facescape_train.jsonl"
-export MVHUMANNET_MANIFEST="$DATASET_MANIFEST_DIR/mvhumannet_train.jsonl"
+export HUMBI_MANIFEST="$DATASET_MANIFEST_DIR/humbi_train.jsonl"
+export NERSEMBLE_MANIFEST="$DATASET_MANIFEST_DIR/nersemble_train.jsonl"
 UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+
+# Enable pose and rendered-cloth supplements only after preparing their JSONL.
+AISTPP_WEIGHT=0.35 THUMAN_WEIGHT=0.35 \
+  AISTPP_MANIFEST="$DATASET_MANIFEST_DIR/aistpp_train.jsonl" \
+  THUMAN_MANIFEST="$DATASET_MANIFEST_DIR/thuman_train.jsonl" \
+  UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
 
 # Single-node multi-card variant.
 NPU_IDS=0,1,2,3 UNIK3D_BACKBONE=vitb bash scripts/train_npu_portrait_portable_ddp.sh
