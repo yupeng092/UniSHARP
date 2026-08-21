@@ -32,6 +32,13 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(REPO_ROOT))
+
+from unisharp.utils.gaussians import Gaussians3D
+from unisharp.utils.portable_renderer import PortableGaussianRenderer
+
 from render_cpu_alpha import (
     crop_and_downsample,
     evaluate_view_dependent_color,
@@ -455,8 +462,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--gaussians", type=Path, required=True, help="gaussians.pt exported by benchmark_cpu.py")
+    parser.add_argument("--gaussians", type=Path, required=True, help="UniSHARP gaussians.pt export (or a compatible 3DGS file)")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--trajectory",
+        choices=("official", "rig"),
+        default="official",
+        help=(
+            "official reproduces released UniSHARP's ten forward and ten "
+            "clockwise orbit poses; rig keeps the legacy named-camera renderer"
+        ),
+    )
     parser.add_argument(
         "--backend", choices=("torch", "cpu", "flash3d_torch", "legacy", "native", "gsplat"), default="torch",
         help=(
@@ -478,32 +494,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline", type=float, default=0.5, help="Physical horizontal camera-centre offset in scene units")
     parser.add_argument("--vertical-baseline", type=float, default=None, help="Physical vertical camera-centre offset; defaults to 0.7 * baseline")
     parser.add_argument("--position-scale", type=float, default=1.0, help="Scale every camera centre from --camera-file/preset; use this to preserve the same angular motion across scenes with different depth scales")
-    parser.add_argument("--height", type=int, default=256)
-    parser.add_argument("--width", type=int, default=384)
+    parser.add_argument("--height", type=int, default=0, help="0 uses the UniSHARP inference image height")
+    parser.add_argument("--width", type=int, default=0, help="0 uses the UniSHARP inference image width")
     parser.add_argument("--fx", type=float, default=390.0)
     parser.add_argument("--fy", type=float, default=390.0)
     parser.add_argument("--cx", type=float, default=None)
     parser.add_argument("--cy", type=float, default=None)
     parser.add_argument(
-        "--use-source-intrinsics", action=argparse.BooleanOptionalAction, default=False,
+        "--use-source-intrinsics", action=argparse.BooleanOptionalAction, default=True,
         help="Use calibrated intrinsics embedded in a compatible Gaussian export (currently UniSHARP); falls back to CLI intrinsics when unavailable",
     )
     parser.add_argument("--supersample", type=int, default=1)
-    parser.add_argument("--crop-margin", type=int, default=20)
-    parser.add_argument("--sharpen", type=float, default=0.35)
+    parser.add_argument("--crop-margin", type=int, default=0)
+    parser.add_argument("--sharpen", type=float, default=0.0)
     parser.add_argument(
-        "--linear-to-srgb", action=argparse.BooleanOptionalAction, default=False,
+        "--linear-to-srgb", action=argparse.BooleanOptionalAction, default=True,
         help="Encode rendered linear RGB to sRGB before PNG output; use for UniSHARP colour exports",
     )
     parser.add_argument("--keep-ratio", type=float, default=1.0)
-    parser.add_argument("--crop-padding", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--min-opacity", type=float, default=0.005)
-    parser.add_argument("--scale-modifier", type=float, default=0.55)
+    parser.add_argument("--crop-padding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--min-opacity", type=float, default=0.0)
+    parser.add_argument("--scale-modifier", type=float, default=1.0)
     parser.add_argument("--sigma-cutoff", type=float, default=2.5)
     parser.add_argument("--min-variance", type=float, default=0.2)
     parser.add_argument("--max-radius", type=float, default=96.0)
     parser.add_argument(
-        "--gsplat-eps2d", type=float, default=0.3,
+        "--gsplat-eps2d", type=float, default=0.0,
         help="gsplat only: projected-covariance regularizer in pixel-squared units",
     )
     parser.add_argument(
@@ -514,7 +530,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--far", type=float, default=1000.0)
     parser.add_argument("--tile-size", type=int, default=16)
     parser.add_argument("--chunk-size", type=int, default=256)
-    parser.add_argument("--background", type=float, nargs=3, default=(0.5, 0.5, 0.5))
+    parser.add_argument("--background", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     parser.add_argument(
         "--prune-source-depth-outliers", action=argparse.BooleanOptionalAction, default=False,
         help=(
@@ -992,8 +1008,180 @@ def complete_unseen_rgb(
     raise ValueError(f"Unsupported completion mode: {args.completion_mode}")
 
 
+def _save_animation(frames: list[torch.Tensor], path: Path, duration_ms: int = 300) -> None:
+    if not frames:
+        raise ValueError(f"No frames available for {path}")
+    images = [Image.fromarray(frame.detach().cpu().numpy()) for frame in frames]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    images[0].save(
+        path,
+        save_all=True,
+        append_images=images[1:],
+        duration=int(duration_ms),
+        loop=0,
+        disposal=2,
+    )
+
+
+def _official_render_resolution(args: argparse.Namespace, metadata: dict) -> tuple[int, int]:
+    """Resolve the released script's output size from the inference export."""
+    height, width = int(args.height), int(args.width)
+    if (height == 0) != (width == 0):
+        raise ValueError("Set both --height and --width, or leave both at 0.")
+    if height == 0:
+        source_hw = metadata.get("input_size_hw", (0, 0))
+        if not isinstance(source_hw, (tuple, list)) or len(source_hw) != 2:
+            raise ValueError("The Gaussian export has no UniSHARP input resolution; specify --height and --width.")
+        height, width = int(source_hw[0]), int(source_hw[1])
+    if height < 1 or width < 1:
+        raise ValueError("The render resolution must be positive.")
+    return height, width
+
+
+def _official_motion(gaussians: dict[str, torch.Tensor]) -> tuple[float, float, dict[str, float | None]]:
+    """Port of released ``_adaptive_view_motion_distances`` for a saved scene."""
+    values = gaussians["xyz"][:, 2].reshape(-1).float()
+    values = values[torch.isfinite(values) & (values > 1e-3) & (values < 1e4)]
+    forward_default, rotate_default = 0.2, 0.1
+    if not int(values.numel()):
+        return forward_default, rotate_default, {"scene_depth_m": None, "median_depth_m": None, "foreground_depth_m": None, "motion_scale": 1.0}
+    median = float(torch.median(values).item())
+    foreground = float(torch.quantile(values, 0.20).item())
+    effective = median if median >= 2.5 else min(median, foreground)
+    if not math.isfinite(effective) or effective >= 2.0:
+        return forward_default, rotate_default, {"scene_depth_m": effective, "median_depth_m": median, "foreground_depth_m": foreground, "motion_scale": 1.0}
+    scale = max(0.08, effective / 2.0)
+    forward = min(forward_default * scale, effective * 0.04)
+    rotate = min(rotate_default * scale, effective * 0.02)
+    return forward, rotate, {"scene_depth_m": effective, "median_depth_m": median, "foreground_depth_m": foreground, "motion_scale": scale}
+
+
+def _official_w2c(eye_xyz: tuple[float, float, float]) -> torch.Tensor:
+    """Released inference keeps the source orientation and translates its centre."""
+    extrinsic = torch.eye(4, dtype=torch.float32)
+    extrinsic[:3, 3] = -torch.tensor(eye_xyz, dtype=torch.float32)
+    return extrinsic
+
+
+def _official_frame(
+    renderer: PortableGaussianRenderer,
+    gaussians: Gaussians3D,
+    extrinsic: torch.Tensor,
+    intrinsics: torch.Tensor,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    output = renderer(
+        gaussians,
+        extrinsics=extrinsic.unsqueeze(0),
+        intrinsics=intrinsics.unsqueeze(0),
+        image_width=int(width),
+        image_height=int(height),
+    )
+    alpha = output.alpha[0].clamp(0.0, 1.0)
+    # This is the same un-premultiply + linearRGB-to-sRGB sequence as the
+    # released GSplatRenderer inference branch (black background).
+    rgb = linear_to_srgb((output.color[0] / alpha.clamp_min(1e-4)).clamp(0.0, 1.0))
+    frame = (rgb.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8).permute(1, 2, 0)
+    crop_y, crop_x = int(round(height * 0.05)), int(round(width * 0.05))
+    if crop_y > 0 and crop_x > 0 and crop_y * 2 < height and crop_x * 2 < width:
+        frame = frame[crop_y : height - crop_y, crop_x : width - crop_x]
+    return frame.contiguous()
+
+
+def render_official_unisharp(args: argparse.Namespace) -> None:
+    """CPU rendering counterpart of released ``scripts/infer_unisharp.py``.
+
+    The camera paths and output convention are identical to the official
+    perspective branch.  The only substitution is the CPU gsplat-classic
+    reference rasterizer for CUDA gsplat.
+    """
+    if args.backend not in {"torch", "cpu"}:
+        raise ValueError("--trajectory official is CPU-only; use --backend torch (the default) or cpu.")
+    if args.camera_file is not None or args.rig != "cross5":
+        raise ValueError("--trajectory official does not use --rig/--camera-file. Use --trajectory rig for physical cameras.")
+    if args.supersample != 1 or args.crop_margin != 0 or args.sharpen != 0.0:
+        raise ValueError("Official trajectory requires --supersample 1 --crop-margin 0 --sharpen 0.")
+    if args.completion_mode != "none" or args.prune_source_depth_outliers:
+        raise ValueError("Completion and depth pruning are legacy rig options; they are not part of official UniSHARP inference.")
+    if tuple(float(value) for value in args.background) != (0.0, 0.0, 0.0):
+        raise ValueError("Official UniSHARP rendering uses a black background.")
+    if float(args.scale_modifier) != 1.0 or float(args.gsplat_eps2d) != 0.0:
+        raise ValueError("Official UniSHARP rendering requires --scale-modifier 1 and --gsplat-eps2d 0.")
+
+    torch.set_num_threads(int(args.threads))
+    gaussians, metadata = load_gaussians(
+        args.gaussians,
+        float(args.keep_ratio),
+        float(args.min_opacity),
+        bool(args.crop_padding),
+    )
+    height, width = _official_render_resolution(args, metadata)
+    source_intrinsics = source_intrinsics_at_output_resolution(metadata, height, width)
+    if source_intrinsics is None:
+        raise ValueError("Official trajectory requires a UniSHARP gaussians.pt export with embedded pinhole intrinsics.")
+    camera = metadata.get("camera", {}) if isinstance(metadata, dict) else {}
+    if str(camera.get("model", "pinhole")).lower() not in {"pinhole", "perspective"}:
+        raise ValueError("The CPU official renderer currently supports the released pinhole branch only.")
+    fx, fy, cx, cy = source_intrinsics
+    intrinsics = torch.tensor(((fx, 0.0, cx), (0.0, fy, cy), (0.0, 0.0, 1.0)), dtype=torch.float32)
+    scene = Gaussians3D(
+        gaussians["xyz"].unsqueeze(0),
+        gaussians["scaling"].unsqueeze(0),
+        gaussians["rotation"].unsqueeze(0),
+        gaussians["color"].unsqueeze(0),
+        gaussians["opacity"].unsqueeze(0),
+    )
+    renderer = PortableGaussianRenderer(background_color="black", low_pass_filter_eps=0.0)
+    forward_distance, rotate_radius, motion = _official_motion(gaussians)
+    forward_poses = [
+        _official_w2c((0.0, 0.0, forward_distance * float(index + 1) / 10.0))
+        for index in range(10)
+    ]
+    rotate_poses = [
+        _official_w2c((rotate_radius * math.sin(-2.0 * math.pi * index / 10.0), rotate_radius * math.cos(-2.0 * math.pi * index / 10.0), 0.0))
+        for index in range(10)
+    ]
+    args.output.mkdir(parents=True, exist_ok=True)
+    forward_dir, rotate_dir = args.output / "forward", args.output / "rotate"
+    forward_dir.mkdir(parents=True, exist_ok=True)
+    rotate_dir.mkdir(parents=True, exist_ok=True)
+    forward_frames, rotate_frames = [], []
+    for index, pose in enumerate(forward_poses):
+        frame = _official_frame(renderer, scene, pose, intrinsics, height, width)
+        Image.fromarray(frame.numpy()).save(forward_dir / f"forward_{index:02d}.png")
+        forward_frames.append(frame)
+    for index, pose in enumerate(rotate_poses):
+        frame = _official_frame(renderer, scene, pose, intrinsics, height, width)
+        Image.fromarray(frame.numpy()).save(rotate_dir / f"rotate_{index:02d}.png")
+        rotate_frames.append(frame)
+    _save_animation(forward_frames, args.output / "forward.gif")
+    _save_animation(rotate_frames, args.output / "rotate.gif")
+    report = {
+        "renderer": "unisharp_official_gsplat_classic_cpu_reference",
+        "trajectory": "released_infer_unisharp_perspective",
+        "gaussians_input": str(args.gaussians.resolve()),
+        "num_gaussians": int(gaussians["xyz"].shape[0]),
+        "height": height,
+        "width": width,
+        "intrinsics": {"fx": fx, "fy": fy, "cx": cx, "cy": cy},
+        "forward_distance_m": forward_distance,
+        "rotate_radius_m": rotate_radius,
+        **motion,
+        "forward_frames": 10,
+        "rotate_frames": 10,
+    }
+    (args.output / "metadata.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Saved official UniSHARP forward/rotate renders to {args.output.resolve()}")
+
+
 def render(args: argparse.Namespace) -> None:
     """Render a prepared argument namespace (also used by UniSHARP in-process)."""
+    if args.trajectory == "official":
+        render_official_unisharp(args)
+        return
+    if int(args.height) < 1 or int(args.width) < 1:
+        raise ValueError("--trajectory rig requires explicit positive --height and --width.")
     if not 0 < args.keep_ratio <= 1:
         raise ValueError("--keep-ratio must be in (0, 1]")
     if args.supersample < 1:

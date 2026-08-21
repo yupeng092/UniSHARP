@@ -79,13 +79,15 @@ plyfile>=1.0.3
 #   COCO 2017 person-image subset and box manifest for a future appearance or
 #   crop-augmentation stage. It is not a drop-in geometric mixed-training
 #   dataset because COCO has no target-view poses or metric depth.
-# * The no-review portrait/outdoor recipe uses only direct public downloads:
-#   COCO Person, Open Images V7 Person, NeuMan, and optional FFHQ. Run
-#   `--assets coco-person openimages-person neuman`; FFHQ's full 1024px
-#   source is ~89 GB and is deliberately opt-in with `--assets ffhq
-#   --ffhq-download-images`. Check FFHQ's CC BY-NC-SA license before use.
-# * The generic `train-feature` CLI can consume COCO/Open Images/NeuMan/FFHQ
-#   manifests. The portrait NPU launchers are local-data launchers; use
+# * The no-review portrait/outdoor recipe uses direct public downloads:
+#   Open Images V7 Person, WIDER FACE, CrowdHuman, NeuMan, Nerfies, and
+#   optional FFHQ. DL3DV is intentionally not part of this portrait recipe.
+#   CrowdHuman and FFHQ have non-commercial terms; check the source licenses
+#   before use. The FFHQ 1024px source is ~89 GB and is opt-in with
+#   `--assets ffhq --ffhq-download-images`.
+# * The portrait NPU launchers can consume the Open Images, WIDER FACE,
+#   CrowdHuman, FFHQ, NeuMan, and Nerfies manifests through their matching
+#   `*_WEIGHT` environment variables. Use
 #   scripts/prepare_calibrated_colmap.py to convert any local COLMAP-text
 #   reconstruction to OpenCV w2c/pixel-K rows when you need novel-view
 #   supervision.

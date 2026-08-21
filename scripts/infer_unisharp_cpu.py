@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-"""CPU-only UniSHARP Gaussian prediction and native-style pinhole rendering.
+"""CPU-only UniSHARP inference with the official released inference policy.
 
 This script intentionally does not import gsplat, Triton, or the 3DGEER CUDA
-rasterizer. Its optional CPU multiview branch mirrors the perspective branch
-of ``scripts/infer_unisharp.py`` using the project's gsplat-classic PyTorch
-reference implementation.
+rasterizer.  Apart from that backend substitution, image loading, camera
+selection, Gaussian prediction, view-motion and forward/orbit trajectories
+follow ``checkpoints/released/scripts/infer_unisharp.py``.  The perspective
+render path uses the project's gsplat-classic PyTorch CPU reference.
 """
 
 import argparse
@@ -47,6 +48,10 @@ from unisharp.utils.rayfit_camera import (  # noqa: E402
 LOGGER = logging.getLogger("infer_unisharp_cpu")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".PNG", ".JPG", ".JPEG", ".WEBP"}
 CameraKind = Literal["perspective", "fisheye", "panorama"]
+
+# Keep these in lockstep with the released official inference entry point.
+PERSPECTIVE_MAX_LONG_EDGE = 768
+PANORAMA_MAX_LONG_EDGE = 1536
 
 FISHEYE_FOV_THRESHOLD_DEG = 120.0
 FISHEYE_DIAG_THRESHOLD_DEG = 150.0
@@ -155,6 +160,56 @@ def _collect_image_paths(args: argparse.Namespace) -> list[Path]:
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
     return paths[: int(args.max_images)] if int(args.max_images) > 0 else paths
+
+
+def _image_hw_from_path(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as raw:
+        image = ImageOps.exif_transpose(raw)
+        width, height = image.size
+    return int(height), int(width)
+
+
+def _should_load_panorama_native(
+    *,
+    image_path: Path,
+    args: argparse.Namespace,
+    camera_json_entry: dict[str, Any] | None,
+) -> bool:
+    """Match the released script's pre-load panorama decision."""
+    forced = str(args.camera).strip().lower()
+    if forced in {"panorama", "erp"}:
+        return True
+    if forced in {"perspective", "pinhole", "fisheye"}:
+        return False
+    json_name = _camera_name_from_json(camera_json_entry)
+    if json_name in {"panorama", "erp", "spherical"}:
+        return True
+    if json_name in {"perspective", "pinhole", "fisheye", "fisheye624", "opencv_fisheye"}:
+        return False
+    image_h, image_w = _image_hw_from_path(image_path)
+    aspect = float(image_w) / float(max(image_h, 1))
+    return PANORAMA_ASPECT_MIN <= aspect <= PANORAMA_ASPECT_MAX
+
+
+def _initial_max_long_edge(
+    *,
+    image_path: Path,
+    args: argparse.Namespace,
+    camera_json_entry: dict[str, Any] | None,
+) -> int:
+    # An explicit option is deliberately an extension.  With it omitted, CPU
+    # inference has the exact image-size policy of the released GPU script.
+    if args.max_long_edge is not None:
+        return int(args.max_long_edge)
+    return (
+        PANORAMA_MAX_LONG_EDGE
+        if _should_load_panorama_native(
+            image_path=image_path,
+            args=args,
+            camera_json_entry=camera_json_entry,
+        )
+        else PERSPECTIVE_MAX_LONG_EDGE
+    )
 
 
 def _load_rgb_u8(
@@ -302,31 +357,6 @@ def _fisheye624_params_from_values(
     if len(vals) != 16:
         raise ValueError("Fisheye624 parameters must contain 8 or 16 values.")
     return torch.tensor(vals, dtype=torch.float32, device=device).reshape(1, 16)
-
-
-def _scale_calibration(
-    intrinsics: torch.Tensor | None,
-    camera_params: torch.Tensor | None,
-    native_hw: tuple[int, int],
-    resized_hw: tuple[int, int],
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-    native_h, native_w = native_hw
-    resized_h, resized_w = resized_hw
-    sx = float(resized_w) / float(native_w)
-    sy = float(resized_h) / float(native_h)
-    if intrinsics is not None and (sx != 1.0 or sy != 1.0):
-        intrinsics = intrinsics.clone()
-        intrinsics[:, 0, 0] *= sx
-        intrinsics[:, 0, 2] *= sx
-        intrinsics[:, 1, 1] *= sy
-        intrinsics[:, 1, 2] *= sy
-    if camera_params is not None and (sx != 1.0 or sy != 1.0):
-        camera_params = camera_params.clone()
-        camera_params[:, 0] *= sx
-        camera_params[:, 2] *= sx
-        camera_params[:, 1] *= sy
-        camera_params[:, 3] *= sy
-    return intrinsics, camera_params
 
 
 def _normalize_rays(rays: torch.Tensor) -> torch.Tensor:
@@ -510,10 +540,15 @@ def _resolve_camera(
     args: argparse.Namespace,
     model: UnisharpFeatureModel,
     image_u8: torch.Tensor,
-    native_hw: tuple[int, int],
     entry: dict[str, Any] | None,
     device: torch.device,
 ) -> tuple[CameraKind, torch.Tensor | None, torch.Tensor | None, dict[str, float] | None]:
+    """Mirror the released script's camera-branch selection.
+
+    The fitted calibration is intentionally produced only after UniK3D ray
+    prediction, as in the official entry point.  Explicit calibration is
+    already expected in the resized inference-image coordinate system.
+    """
     _, _, height, width = image_u8.shape
     json_intrinsics = _values_from_camera_json(entry, "intrinsics", "camera_intrinsics", "K")
     json_camera_params = _values_from_camera_json(entry, "camera_params", "fisheye624_params", "params")
@@ -521,35 +556,39 @@ def _resolve_camera(
     camera_params = _fisheye624_params_from_values(json_camera_params or args.camera_params, device)
     if intrinsics is not None and camera_params is not None:
         raise ValueError("Use only one of camera intrinsics or fisheye camera parameters.")
-    intrinsics, camera_params = _scale_calibration(
-        intrinsics,
-        camera_params,
-        native_hw=native_hw,
-        resized_hw=(int(height), int(width)),
-    )
 
-    forced_kind = _canonical_camera_name(args.camera)
-    json_kind = _canonical_camera_name(_camera_name_from_json(entry))
+    json_name = _camera_name_from_json(entry)
+    forced_name = str(args.camera).strip().lower()
+    forced_name = None if forced_name == "auto" else {"pinhole": "perspective", "erp": "panorama"}.get(forced_name, forced_name)
+    aspect_is_panorama = PANORAMA_ASPECT_MIN <= (float(width) / float(max(height, 1))) <= PANORAMA_ASPECT_MAX
     if intrinsics is not None:
-        if forced_kind not in (None, "perspective") or json_kind not in (None, "perspective"):
-            raise ValueError("Pinhole intrinsics conflict with the selected camera type.")
+        # This unusual branch (explicit K + declared ERP) is also retained for
+        # parity: the released code dispatches spherical inference and does
+        # not pass the pinhole calibration into that model call.
+        if json_name in {"panorama", "erp", "spherical"}:
+            return "panorama", None, None, None
         return "perspective", intrinsics, None, None
     if camera_params is not None:
-        if forced_kind not in (None, "fisheye") or json_kind not in (None, "fisheye"):
-            raise ValueError("Fisheye parameters conflict with the selected camera type.")
         return "fisheye", None, camera_params, None
 
-    declared_kind = forced_kind or json_kind
-    aspect = float(width) / float(max(height, 1))
-    if declared_kind == "panorama" or (
-        declared_kind is None and PANORAMA_ASPECT_MIN <= aspect <= PANORAMA_ASPECT_MAX
+    if forced_name == "panorama" or (
+        forced_name is None and (json_name in {"panorama", "erp", "spherical"} or aspect_is_panorama)
     ):
         return "panorama", None, None, None
 
     LOGGER.info("No calibration supplied; predicting camera rays with UniK3D")
     rays = _predict_unik3d_rays(model, image_u8)
     stats = _ray_fov_stats(rays)
-    camera_kind = declared_kind or _classify_camera(stats)
+    if forced_name == "fisheye":
+        camera_kind: CameraKind = "fisheye"
+    elif forced_name == "perspective":
+        camera_kind = "perspective"
+    elif json_name in {"fisheye", "fisheye624", "opencv_fisheye"}:
+        camera_kind = "fisheye"
+    elif json_name in {"perspective", "pinhole"}:
+        camera_kind = "perspective"
+    else:
+        camera_kind = _classify_camera(stats)
     if camera_kind == "panorama":
         return camera_kind, None, None, stats
     if camera_kind == "fisheye":
@@ -674,14 +713,12 @@ def _render_multiview_cpu(
     forward_poses, orbit_poses = _native_poses(forward_m, orbit_m, device)
     forward_frames = [_crop_native_border(_render_native_frame(renderer, world, pose, k3, output_h, output_w)) for pose in forward_poses]
     orbit_frames = [_crop_native_border(_render_native_frame(renderer, world, pose, k3, output_h, output_w)) for pose in orbit_poses]
-    render_dir = sample_dir / "multiview"
-    _save_gif(forward_frames, render_dir / "forward.gif")
-    _save_gif(orbit_frames, render_dir / "rotate.gif")
-    (render_dir / "metadata.json").write_text(
-        json.dumps({"renderer": "unisharp_gsplat_cpu_reference", "forward_distance_m": forward_m, "rotate_radius_m": orbit_m, "height": output_h, "width": output_w, "low_pass_filter_eps": float(args.low_pass_filter_eps)}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return render_dir
+    # The released entry stores perspective forward.gif/rotate.gif directly
+    # in the per-image directory.  Keep that layout so a CPU result can be
+    # compared file-for-file with the GPU script's output structure.
+    _save_gif(forward_frames, sample_dir / "forward.gif")
+    _save_gif(orbit_frames, sample_dir / "rotate.gif")
+    return sample_dir
 
 
 def _process_one(
@@ -694,20 +731,40 @@ def _process_one(
     device: torch.device,
 ) -> None:
     started = time.perf_counter()
-    rgb_u8, native_hw = _load_rgb_u8(image_path, int(args.max_long_edge))
-    _, height, width = rgb_u8.shape
-    image_u8 = rgb_u8.unsqueeze(0).to(device=device)
-    image = image_u8.to(dtype=torch.float32).div_(255.0)
     entry = _camera_json_for_image(camera_json, image_path)
-
-    camera_kind, intrinsics, camera_params, ray_stats = _resolve_camera(
+    native_hw = _image_hw_from_path(image_path)
+    load_max_long_edge = _initial_max_long_edge(
+        image_path=image_path,
         args=args,
-        model=model,
-        image_u8=image_u8,
-        native_hw=native_hw,
-        entry=entry,
-        device=device,
+        camera_json_entry=entry,
     )
+
+    # The released script reloads a panorama at its native panorama cap when
+    # camera-ray classification only discovers that after the first pass.
+    for reload_attempt in range(2):
+        rgb_u8, _ = _load_rgb_u8(image_path, load_max_long_edge)
+        _, height, width = rgb_u8.shape
+        if height < 4 or width < 4:
+            raise ValueError(f"Invalid image size for {image_path}: {tuple(rgb_u8.shape)}")
+        image_u8 = rgb_u8.unsqueeze(0).to(device=device)
+        image = image_u8.to(dtype=torch.float32).div_(255.0)
+        camera_kind, intrinsics, camera_params, ray_stats = _resolve_camera(
+            args=args,
+            model=model,
+            image_u8=image_u8,
+            entry=entry,
+            device=device,
+        )
+        needs_native_panorama = (
+            camera_kind == "panorama"
+            and (height < native_hw[0] or width < native_hw[1])
+            and load_max_long_edge != PANORAMA_MAX_LONG_EDGE
+            and args.max_long_edge is None
+        )
+        if needs_native_panorama and reload_attempt == 0:
+            load_max_long_edge = PANORAMA_MAX_LONG_EDGE
+            continue
+        break
     LOGGER.info(
         "%s | camera=%s | input=%dx%d (native=%dx%d)",
         image_path,
@@ -726,8 +783,13 @@ def _process_one(
         intrinsics=intrinsics,
         camera_params=camera_params,
         distance_init_cap_m=float(args.distance_init_cap_m),
-        save_aux=bool(args.save_aux) or bool(args.render_multiview),
+        # Official inference always requests the complete prediction dict;
+        # depth is used for its adaptive forward/orbit motion.
+        save_aux=True,
     )
+    output_rays = aux.get("geometry_rays", aux.get("unik3d_gt_rays", aux.get("unik3d_rays")))
+    if torch.is_tensor(output_rays):
+        ray_stats = _ray_fov_stats(output_rays)
     gaussian_tensors = _gaussians_to_cpu_dict(gaussians)
     num_gaussians = int(gaussian_tensors["mean_vectors"].shape[1])
     sample_dir = Path(args.out_dir) / _slug_from_path(image_path)
@@ -811,7 +873,7 @@ def _process_one(
         "outputs": {
             "pt": "gaussians.pt",
             "ply": "gaussians.ply" if bool(args.save_ply) else None,
-            "multiview": "multiview" if multiview_dir is not None else None,
+            "multiview": ["forward.gif", "rotate.gif"] if multiview_dir is not None else None,
         },
     }
     (sample_dir / "metadata.json").write_text(
@@ -853,8 +915,11 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-long-edge",
         type=int,
-        default=384,
-        help="Resize the image for CPU inference; 0 keeps the native resolution.",
+        default=None,
+        help=(
+            "Optional override. Omit to match official inference: 768 for "
+            "perspective/fisheye and 1536 for ERP panorama; 0 keeps native size."
+        ),
     )
     parser.add_argument(
         "--camera",
@@ -867,14 +932,14 @@ def _build_argparser() -> argparse.ArgumentParser:
         type=float,
         nargs="+",
         default=None,
-        help="Original-image fx fy cx cy, or a row-major 3x3 K. Values are scaled after resizing.",
+        help="fx fy cx cy, or a row-major 3x3 K, in the actual inference-image pixel coordinates.",
     )
     parser.add_argument(
         "--camera-params",
         type=float,
         nargs="+",
         default=None,
-        help="Original-image Fisheye624 parameters (8 or 16 values). Values are scaled after resizing.",
+        help="Fisheye624 parameters (8 or 16 values) in the actual inference-image pixel coordinates.",
     )
     parser.add_argument("--distance-init-cap-m", type=float, default=0.0)
     parser.add_argument("--save-ply", action="store_true", help="Also export the project's SHARP-style PLY.")
@@ -909,7 +974,7 @@ def _build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     args = _build_argparser().parse_args()
-    if int(args.max_long_edge) < 0:
+    if args.max_long_edge is not None and int(args.max_long_edge) < 0:
         raise ValueError("--max-long-edge must be >= 0.")
     if int(args.render_height) < 0 or int(args.render_width) < 0:
         raise ValueError("--render-height and --render-width must be >= 0.")

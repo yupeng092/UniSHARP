@@ -43,6 +43,18 @@ OPENIMAGES_IMAGE_URL_TEMPLATE = "https://open-images-dataset.s3.amazonaws.com/{s
 OPENIMAGES_PERSON_LABEL = "/m/01g317"
 FFHQ_DOWNLOADER_URL = "https://raw.githubusercontent.com/NVlabs/ffhq-dataset/master/download_ffhq.py"
 NEUMAN_DATA_URL = "https://docs-assets.developer.apple.com/ml-research/datasets/neuman/dataset.zip"
+NERFIES_VRIG_URL = "https://github.com/google/nerfies/releases/download/0.1/nerfies-vrig-dataset-v0.1.zip"
+# Official Google Drive objects linked from https://www.crowdhuman.org/download.html.
+# CrowdHuman is non-commercial research/education only; do not use it in a
+# commercial training run.
+CROWDHUMAN_FILES = {
+    "CrowdHuman_train01.zip": "134QOvaatwKdy0iIeNqA_p-xkAhkV4F8Y",
+    "CrowdHuman_train02.zip": "17evzPh7gc1JBNvnW1ENXLy5Kr4Q_Nnla",
+    "CrowdHuman_train03.zip": "1tdp0UCgxrqy1B6p8LkR-Iy0aIJ8l4fJW",
+    "CrowdHuman_val.zip": "18jFI789CoHTppQ7vmRSFEdnGaSQZ4YzO",
+    "annotation_train.odgt": "1UUTea5mYqvlUObsC1Z8CFldHJAtLtMX3",
+    "annotation_val.odgt": "10WIRwu8ju8GRLuCkZ_vT6hnNxs5ptwoL",
+}
 MANIFEST_REPO = OMNIROOMS_REPO
 MANIFEST_PATTERNS = ("manifests/train/*", "manifests/validation/*")
 
@@ -331,6 +343,159 @@ def _download_url(url: str, target: Path, *, dry_run: bool) -> None:
     urllib.request.urlretrieve(url, target)
 
 
+def _download_google_drive_file(file_id: str, target: Path, *, dry_run: bool) -> None:
+    """Download an official public Google Drive object without a third-party tool.
+
+    The URL is intentionally restricted to fixed dataset-provider file IDs;
+    callers cannot turn this into an arbitrary URL fetch.  Google can still
+    require an interactive confirmation for very large files, in which case a
+    clear error asks the user to download the official archive manually and
+    place it at the same target path before rerunning this command.
+    """
+    if dry_run:
+        print(f"would download Google Drive object {file_id} -> {target}")
+        return
+    if target.is_file() and target.stat().st_size > 0:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    url = f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+    request = urllib.request.Request(url, headers={"User-Agent": "UniSHARP-dataset-downloader/1.0"})
+    print(f"Downloading Google Drive object -> {target.name} …")
+    with urllib.request.urlopen(request) as response, target.open("wb") as destination:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "text/html" in content_type:
+            raise RuntimeError(
+                f"Google Drive requires an interactive confirmation for {target.name}. "
+                f"Download it from the official CrowdHuman page, save it as {target}, then rerun."
+            )
+        shutil.copyfileobj(response, destination, length=1024 * 1024)
+
+
+def _write_crowdhuman_manifests(root: Path, manifest_root: Path, max_images: int) -> None:
+    annotation = root / "annotation_train.odgt"
+    if not annotation.is_file():
+        raise RuntimeError(f"CrowdHuman annotation is missing: {annotation}")
+    image_index: dict[str, Path] = {}
+    for path in root.rglob("*.jpg"):
+        image_index.setdefault(path.name, path.resolve())
+    records: list[dict[str, object]] = []
+    for line in annotation.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        image_id = str(row.get("ID", ""))
+        image_path = image_index.get(f"{image_id}.jpg")
+        if image_path is None:
+            continue
+        boxes: list[list[float]] = []
+        for box in row.get("gtboxes", []):
+            if not isinstance(box, dict) or str(box.get("tag", "")) != "person":
+                continue
+            if bool((box.get("extra") or {}).get("ignore", 0)):
+                continue
+            values = box.get("fbox", box.get("vbox"))
+            if isinstance(values, list) and len(values) >= 4:
+                boxes.append([float(value) for value in values[:4]])
+        if boxes:
+            records.append({"image": str(image_path), "person_boxes_xywh": boxes})
+    records.sort(key=lambda row: str(row["image"]))
+    if int(max_images) > 0:
+        records = records[: int(max_images)]
+    if not records:
+        raise RuntimeError(f"No usable CrowdHuman person images found under {root}")
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / "crowdhuman_images.txt").write_text(
+        "\n".join(str(row["image"]) for row in records) + "\n", encoding="utf-8"
+    )
+    (manifest_root / "crowdhuman_boxes.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in records) + "\n", encoding="utf-8"
+    )
+    print(f"CrowdHuman manifest prepared: {manifest_root / 'crowdhuman_boxes.jsonl'} ({len(records)} images)")
+
+
+def _download_crowdhuman(*, target: Path, manifest_root: Path, max_images: int, include_val: bool, dry_run: bool) -> None:
+    """Fetch official CrowdHuman archives and create an appearance manifest."""
+    names = ["CrowdHuman_train01.zip", "CrowdHuman_train02.zip", "CrowdHuman_train03.zip", "annotation_train.odgt"]
+    if include_val:
+        names.extend(["CrowdHuman_val.zip", "annotation_val.odgt"])
+    if dry_run:
+        print(f"would download official CrowdHuman archives ({', '.join(names)}) into {target}")
+        return
+    archive_root = target / ".archives"
+    for name in names:
+        destination = target / name if name.endswith(".odgt") else archive_root / name
+        _download_google_drive_file(CROWDHUMAN_FILES[name], destination, dry_run=False)
+        if name.endswith(".zip"):
+            marker = target / ".extracted" / f"{name}.ok"
+            if not marker.exists():
+                print(f"Extracting {name} …")
+                with zipfile.ZipFile(destination) as package:
+                    package.extractall(target)
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("ok\n", encoding="utf-8")
+    _write_crowdhuman_manifests(target, manifest_root, max_images)
+
+
+def _write_nerfies_manifest(root: Path, manifest_root: Path) -> None:
+    """Convert the public Nerfies camera JSONs into UniSHARP calibrated JSONL."""
+    scenes: list[dict[str, object]] = []
+    for dataset_json in sorted(root.rglob("dataset.json")):
+        scene_root = dataset_json.parent
+        payload = json.loads(dataset_json.read_text(encoding="utf-8"))
+        item_ids = payload.get("train_ids", payload.get("ids", []))
+        frames: list[dict[str, object]] = []
+        for item_id in item_ids:
+            identifier = str(item_id)
+            image_path = scene_root / "rgb" / "1x" / f"{identifier}.png"
+            camera_path = scene_root / "camera" / f"{identifier}.json"
+            if not image_path.is_file() or not camera_path.is_file():
+                continue
+            camera = json.loads(camera_path.read_text(encoding="utf-8"))
+            rotation = camera.get("orientation")
+            position = camera.get("position")
+            principal = camera.get("principal_point")
+            focal = camera.get("focal_length")
+            if not (isinstance(rotation, list) and isinstance(position, list) and isinstance(principal, list) and focal is not None):
+                continue
+            r = [[float(value) for value in row] for row in rotation]
+            if len(r) != 3 or any(len(row) != 3 for row in r) or len(position) != 3 or len(principal) != 2:
+                continue
+            center = [float(value) for value in position]
+            translation = [-sum(r[row][col] * center[col] for col in range(3)) for row in range(3)]
+            fx = float(focal)
+            fy = fx * float(camera.get("pixel_aspect_ratio", 1.0))
+            cx, cy = float(principal[0]), float(principal[1])
+            frames.append(
+                {
+                    "image": str(image_path.resolve()),
+                    "intrinsics": [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+                    "w2c": [r[0] + [translation[0]], r[1] + [translation[1]], r[2] + [translation[2]], [0.0, 0.0, 0.0, 1.0]],
+                }
+            )
+        if len(frames) >= 2:
+            scenes.append({"scene": str(scene_root.relative_to(root)), "frames": frames})
+    if not scenes:
+        raise RuntimeError(f"No Nerfies scenes with RGB/camera pairs were found under {root}")
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    manifest = manifest_root / "nerfies_multiview.jsonl"
+    manifest.write_text("\n".join(json.dumps(scene) for scene in scenes) + "\n", encoding="utf-8")
+    print(f"Nerfies multi-view manifest prepared: {manifest} ({len(scenes)} scenes)")
+
+
+def _download_nerfies(*, target: Path, manifest_root: Path, dry_run: bool) -> None:
+    archive = target / ".archives" / "nerfies-vrig-dataset-v0.1.zip"
+    if dry_run:
+        print(f"would download public Nerfies VRig data ({NERFIES_VRIG_URL}) into {target}")
+        return
+    _download_url(NERFIES_VRIG_URL, archive, dry_run=False)
+    marker = target / ".nerfies_extracted"
+    if not marker.exists():
+        with zipfile.ZipFile(archive) as package:
+            package.extractall(target)
+        marker.write_text("ok\n", encoding="utf-8")
+    _write_nerfies_manifest(target, manifest_root)
+
+
 def _download_coco_person(
     *,
     target: Path,
@@ -456,7 +621,7 @@ def _prepare_ffhq(*, target: Path, manifest_root: Path, download_images: bool, d
     print(f"FFHQ image manifest prepared: {manifest} ({len(images)} images)")
 
 
-def _download_neuman(*, target: Path, dry_run: bool) -> None:
+def _download_neuman(*, target: Path, manifest_root: Path, dry_run: bool) -> None:
     """Download Apple's public NeuMan package; no account or approval is used."""
     archive = target / ".archives" / "neuman_dataset.zip"
     if dry_run:
@@ -468,10 +633,19 @@ def _download_neuman(*, target: Path, dry_run: bool) -> None:
         with zipfile.ZipFile(archive) as package:
             package.extractall(target)
         marker.write_text("ok\n", encoding="utf-8")
-    print(
-        f"NeuMan data prepared: {target}. Convert any COLMAP cameras.txt/images.txt found there with "
-        f"scripts/prepare_calibrated_colmap.py --source-root {target} --manifest <manifest>/neuman_train.jsonl"
+    manifest = manifest_root / "neuman_train.jsonl"
+    converter = REPO_ROOT / "scripts" / "prepare_calibrated_colmap.py"
+    result = subprocess.run(
+        [sys.executable, str(converter), "--source-root", str(target), "--manifest", str(manifest)],
+        check=False,
     )
+    if result.returncode == 0:
+        print(f"NeuMan data and calibrated multi-view manifest prepared: {manifest}")
+    else:
+        print(
+            f"NeuMan data prepared: {target}. Automatic COLMAP conversion did not find usable text models; "
+            f"run {converter} --source-root {target} --manifest {manifest} after checking the extraction."
+        )
 
 
 def _read_widerface_boxes(annotation: Path) -> list[tuple[str, list[list[float]]]]:
@@ -575,7 +749,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--assets",
         nargs="+",
-        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "openimages-person", "ffhq", "neuman"),
+        choices=("unik3d", "manifests", "unisharp-checkpoints", "omnirooms", "re10k", "wildrgbd", "dl3dv", "coco-person", "widerface", "openimages-person", "crowdhuman", "ffhq", "neuman", "nerfies"),
         default=("unik3d", "manifests"),
         help="Assets to download. Large datasets are always explicit options.",
     )
@@ -604,9 +778,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--widerface-include-val", action="store_true", help="Also download WIDER FACE validation images and labels.")
     parser.add_argument("--openimages-person-root", type=Path, default=DATA_ROOT / "openimages_person")
     parser.add_argument("--openimages-person-max-images", type=int, default=10000, help="0 downloads every Open Images V7 train image with a Person box.")
+    parser.add_argument("--crowdhuman-root", type=Path, default=DATA_ROOT / "crowdhuman")
+    parser.add_argument("--crowdhuman-max-images", type=int, default=10000, help="0 keeps every CrowdHuman train image with a usable full-body person box.")
+    parser.add_argument("--crowdhuman-include-val", action="store_true", help="Also download/extract CrowdHuman validation data; training manifest remains train-only.")
     parser.add_argument("--ffhq-root", type=Path, default=DATA_ROOT / "ffhq")
     parser.add_argument("--ffhq-download-images", action="store_true", help="Download every public FFHQ 1024px image (about 89 GB).")
     parser.add_argument("--neuman-root", type=Path, default=DATA_ROOT / "neuman")
+    parser.add_argument("--nerfies-root", type=Path, default=DATA_ROOT / "nerfies")
     parser.add_argument("--token", default=None, help="Hugging Face token; defaults to HF_TOKEN if set.")
     parser.add_argument("--dry-run", action="store_true", help="Print planned downloads without network access.")
     return parser
@@ -678,13 +856,25 @@ def main() -> None:
             target=Path(args.openimages_person_root), manifest_root=Path(args.manifest_root),
             max_images=int(args.openimages_person_max_images), dry_run=bool(args.dry_run),
         )
+    if "crowdhuman" in assets:
+        if int(args.crowdhuman_max_images) < 0:
+            raise SystemExit("--crowdhuman-max-images must be >= 0.")
+        _download_crowdhuman(
+            target=Path(args.crowdhuman_root), manifest_root=Path(args.manifest_root),
+            max_images=int(args.crowdhuman_max_images), include_val=bool(args.crowdhuman_include_val),
+            dry_run=bool(args.dry_run),
+        )
     if "ffhq" in assets:
         _prepare_ffhq(
             target=Path(args.ffhq_root), manifest_root=Path(args.manifest_root),
             download_images=bool(args.ffhq_download_images), dry_run=bool(args.dry_run),
         )
     if "neuman" in assets:
-        _download_neuman(target=Path(args.neuman_root), dry_run=bool(args.dry_run))
+        _download_neuman(target=Path(args.neuman_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run))
+    if "nerfies" in assets:
+        _download_nerfies(
+            target=Path(args.nerfies_root), manifest_root=Path(args.manifest_root), dry_run=bool(args.dry_run)
+        )
 
 
 if __name__ == "__main__":

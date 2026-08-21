@@ -209,13 +209,17 @@ python scripts/download_npu_assets.py \
   --coco-person-split train2017 \
   --coco-person-max-images 5000
 
-# Fully public, direct-download portrait/outdoor sources. No provider review
-# or account approval is required. FFHQ's complete 1024px set is ~89 GB and
-# is therefore opt-in; it is CC BY-NC-SA and cannot be used commercially.
+# Direct-download portrait/outdoor sources. This recommended recipe does not
+# use DL3DV. Open Images, WIDER FACE, CrowdHuman, NeuMan and Nerfies are
+# selected for portrait, full-body/outdoor, and calibrated multi-view coverage.
+# CrowdHuman and FFHQ have non-commercial terms; check their licenses before
+# using them in any product. FFHQ's complete 1024px set is ~89 GB and remains
+# an explicit opt-in download.
 python scripts/download_npu_assets.py \
-  --assets coco-person openimages-person neuman \
-  --coco-person-max-images 5000 \
-  --openimages-person-max-images 10000
+  --assets openimages-person widerface crowdhuman neuman nerfies \
+  --openimages-person-max-images 10000 \
+  --widerface-max-images 10000 \
+  --crowdhuman-max-images 10000
 python scripts/download_npu_assets.py --assets ffhq --ffhq-download-images
 ```
 
@@ -241,7 +245,23 @@ python scripts/prepare_local_images.py \
   --manifest "$PWD/dataset_manifests/my_mixed_images.txt"
 
 LOCAL_IMAGES_MANIFEST="$PWD/dataset_manifests/my_mixed_images.txt" \
-  UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+```
+
+Downloaded public sources can be enabled independently; their default
+manifests are under `DATASET_MANIFEST_DIR`. Image-only sources improve
+appearance, while NeuMan and Nerfies supply calibrated multi-view geometry.
+For example, mix your photos with Open Images, WIDER FACE, CrowdHuman and
+Nerfies without enabling DL3DV:
+
+```bash
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export LOCAL_IMAGES_ROOT="/data/my_portraits"
+export OPENIMAGES_PERSON_WEIGHT=1.0
+export WIDERFACE_WEIGHT=0.5
+export CROWDHUMAN_WEIGHT=0.5
+export NERFIES_WEIGHT=1.0
+UNIK3D_BACKBONE=vitb bash scripts/train_npu_portrait_portable.sh
 ```
 
 For true novel-view supervision, your local capture must contain matched views
@@ -476,16 +496,17 @@ python scripts/infer_unisharp_cpu.py \
   --checkpoint /path/to/step_XXXXXXX.pt \
   --image /path/to/perspective.jpg \
   --out-dir outputs/cpu_inference \
-  --max-long-edge 384 \
   --threads 8 \
   --render-multiview
 ```
 
-The CPU reference follows gsplat classic math but cannot be bit-identical to
-CUDA gsplat. Fisheye and panorama rendering remain CUDA-only. By default the
-GIFs use the resized inference resolution; set both `--render-width` and
-`--render-height` to select another resolution while preserving field of view.
-For example:
+With no `--max-long-edge` override, its input policy now matches the released
+GPU script: longest edge 768 for perspective/fisheye and 1536 for ERP
+panorama. Pass `--max-long-edge 0` to keep native image size. The CPU reference
+follows gsplat classic math but cannot be bit-identical to CUDA gsplat. Fisheye
+and panorama rendering remain CUDA-only. By default the GIFs use the resized
+inference resolution; set both `--render-width` and `--render-height` to select
+another resolution while preserving field of view. For example:
 
 ```bash
 python scripts/infer_unisharp_cpu.py \
@@ -497,20 +518,30 @@ python scripts/infer_unisharp_cpu.py \
   --render-height 1024
 ```
 
-### Flash3D-compatible standalone CPU rendering
+### Official UniSHARP-style standalone CPU rendering
 
-`scripts/render_unisharp_cpu.py` is a vendored copy of
-`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`; its required
-`scripts/render_cpu_alpha.py` helper is vendored alongside it. It therefore
-produces the same `cross5` views, RGB/alpha/depth folders, comparison grid and
-report for an exported UniSHARP `gaussians.pt` file without a Flash3D path
-dependency:
+`scripts/render_unisharp_cpu.py` now defaults to the released UniSHARP
+perspective trajectory: ten forward translations and ten clockwise orbit
+translations, with the source inference resolution and camera intrinsics read
+from `gaussians.pt`. It saves the same `forward/`, `rotate/`, `forward.gif`,
+and `rotate.gif` structure as the official inference script:
 
 ```bash
 python scripts/render_unisharp_cpu.py \
   --gaussians outputs/cpu_inference/sample/gaussians.pt \
+  --output outputs/unisharp_cpu_render \
+  --backend torch
+```
+
+The legacy physical-camera `cross5`/`arc5`/`grid9` renderer remains available
+only when explicitly requested with `--trajectory rig`; that mode requires an
+explicit output resolution:
+
+```bash
+python scripts/render_unisharp_cpu.py \
+  --trajectory rig \
+  --gaussians outputs/cpu_inference/sample/gaussians.pt \
   --output outputs/flash3d_render \
-  --backend torch \
   --rig cross5 \
   --height 256 \
   --width 384 \

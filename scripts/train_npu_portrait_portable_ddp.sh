@@ -34,6 +34,18 @@ LOCAL_IMAGES_MANIFEST="${LOCAL_IMAGES_MANIFEST:-${DATASET_MANIFEST_DIR}/local_im
 LOCAL_COLMAP_ROOT="${LOCAL_COLMAP_ROOT:-}"
 LOCAL_MULTIVIEW_MANIFEST="${LOCAL_MULTIVIEW_MANIFEST:-${DATASET_MANIFEST_DIR}/local_multiview.jsonl}"
 LOCAL_IMAGES_WEIGHT="${LOCAL_IMAGES_WEIGHT:-1.0}"; LOCAL_MULTIVIEW_WEIGHT="${LOCAL_MULTIVIEW_WEIGHT:-0.0}"
+OPENIMAGES_PERSON_MANIFEST="${OPENIMAGES_PERSON_MANIFEST:-${DATASET_MANIFEST_DIR}/openimages_person_train_boxes.jsonl}"
+OPENIMAGES_PERSON_WEIGHT="${OPENIMAGES_PERSON_WEIGHT:-0.0}"
+WIDERFACE_MANIFEST="${WIDERFACE_MANIFEST:-${DATASET_MANIFEST_DIR}/widerface_images.txt}"
+WIDERFACE_WEIGHT="${WIDERFACE_WEIGHT:-0.0}"
+CROWDHUMAN_MANIFEST="${CROWDHUMAN_MANIFEST:-${DATASET_MANIFEST_DIR}/crowdhuman_boxes.jsonl}"
+CROWDHUMAN_WEIGHT="${CROWDHUMAN_WEIGHT:-0.0}"
+FFHQ_MANIFEST="${FFHQ_MANIFEST:-${DATASET_MANIFEST_DIR}/ffhq_images.txt}"
+FFHQ_WEIGHT="${FFHQ_WEIGHT:-0.0}"
+NEUMAN_MANIFEST="${NEUMAN_MANIFEST:-${DATASET_MANIFEST_DIR}/neuman_train.jsonl}"
+NEUMAN_WEIGHT="${NEUMAN_WEIGHT:-0.0}"
+NERFIES_MANIFEST="${NERFIES_MANIFEST:-${DATASET_MANIFEST_DIR}/nerfies_multiview.jsonl}"
+NERFIES_WEIGHT="${NERFIES_WEIGHT:-0.0}"
 
 if [[ ! -f "${LOCAL_IMAGES_MANIFEST}" && -n "${LOCAL_IMAGES_ROOT}" ]]; then
   python "${SCRIPT_DIR}/prepare_local_images.py" --source-root "${LOCAL_IMAGES_ROOT}" --manifest "${LOCAL_IMAGES_MANIFEST}"
@@ -50,7 +62,21 @@ if [[ "${LOCAL_MULTIVIEW_WEIGHT}" != "0" && "${LOCAL_MULTIVIEW_WEIGHT}" != "0.0"
   [[ -f "${LOCAL_MULTIVIEW_MANIFEST}" ]] || { echo "Set LOCAL_COLMAP_ROOT or LOCAL_MULTIVIEW_MANIFEST." >&2; exit 1; }
   LOCAL_ARGS+=(--local-multiview-manifest "${LOCAL_MULTIVIEW_MANIFEST}" --dataset-weight-local-multiview "${LOCAL_MULTIVIEW_WEIGHT}")
 fi
-[[ "${#LOCAL_ARGS[@]}" -gt 0 ]] || { echo "At least one local dataset weight must be positive." >&2; exit 1; }
+PUBLIC_ARGS=()
+add_public_dataset() {
+  local manifest="$1" weight="$2" manifest_flag="$3" weight_flag="$4" label="$5"
+  if [[ "${weight}" != "0" && "${weight}" != "0.0" ]]; then
+    [[ -f "${manifest}" ]] || { echo "${label} manifest was not found: ${manifest}" >&2; exit 1; }
+    PUBLIC_ARGS+=("${manifest_flag}" "${manifest}" "${weight_flag}" "${weight}")
+  fi
+}
+add_public_dataset "${OPENIMAGES_PERSON_MANIFEST}" "${OPENIMAGES_PERSON_WEIGHT}" --openimages-person-manifest --dataset-weight-openimages-person "OpenImages Person"
+add_public_dataset "${WIDERFACE_MANIFEST}" "${WIDERFACE_WEIGHT}" --widerface-manifest --dataset-weight-widerface "WIDER FACE"
+add_public_dataset "${CROWDHUMAN_MANIFEST}" "${CROWDHUMAN_WEIGHT}" --crowdhuman-manifest --dataset-weight-crowdhuman "CrowdHuman"
+add_public_dataset "${FFHQ_MANIFEST}" "${FFHQ_WEIGHT}" --ffhq-manifest --dataset-weight-ffhq "FFHQ"
+add_public_dataset "${NEUMAN_MANIFEST}" "${NEUMAN_WEIGHT}" --neuman-manifest --dataset-weight-neuman "NeuMan"
+add_public_dataset "${NERFIES_MANIFEST}" "${NERFIES_WEIGHT}" --nerfies-manifest --dataset-weight-nerfies "Nerfies"
+[[ "${#LOCAL_ARGS[@]}" -gt 0 || "${#PUBLIC_ARGS[@]}" -gt 0 ]] || { echo "Enable at least one local or public dataset weight." >&2; exit 1; }
 UNIK3D_UNFREEZE_ARGS=(
   --unik3d-decoder-unfreeze-step "${UNIK3D_DECODER_UNFREEZE_STEP}"
   --unik3d-encoder-unfreeze-step "${UNIK3D_ENCODER_UNFREEZE_STEP}"
@@ -70,4 +96,4 @@ exec torchrun --standalone --nproc_per_node="${WORLD_SIZE}" --master_port="${MAS
   --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride 2 \
   "${UNIK3D_UNFREEZE_ARGS[@]}" \
   --dataset-weight-re10k 0 --dataset-weight-hm3d 0 --dataset-weight-sim 0 --dataset-weight-wildrgbd 0 --dataset-weight-dl3dv 0 --dataset-weight-scanetpp 0 \
-  --lambda-percep 0 --vis-every 0 "${LOCAL_ARGS[@]}" "$@"
+  --lambda-percep 0 --vis-every 0 "${LOCAL_ARGS[@]}" "${PUBLIC_ARGS[@]}" "$@"
