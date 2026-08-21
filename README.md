@@ -257,6 +257,23 @@ LOCAL_MULTIVIEW_WEIGHT=1.0 UNIK3D_BACKBONE=vitb \
   bash scripts/train_npu_portrait_portable.sh
 ```
 
+Both local NPU launchers enable progressive UniK3D tuning by default: steps
+`0–19999` train only the new UniSHARP modules; step `20000` unfreezes the
+UniK3D decoder/head; step `50000` unfreezes the final four encoder blocks.
+The full encoder remains frozen unless explicitly enabled:
+
+```bash
+UNIK3D_BACKBONE=vitb \
+UNIK3D_DECODER_UNFREEZE_STEP=20000 \
+UNIK3D_ENCODER_UNFREEZE_STEP=50000 \
+UNIK3D_ENCODER_LAST_N_BLOCKS=4 \
+UNIK3D_ENCODER_FULL_UNFREEZE_STEP=80000 \
+bash scripts/train_npu_portrait_portable.sh
+```
+
+Set `UNIK3D_PROGRESSIVE_UNFREEZE=0` only when you intentionally want the
+legacy behavior that fine-tunes all UniK3D parameters from the first step.
+
 Use `scripts/prepare_local_images.py` and
 `scripts/prepare_calibrated_colmap.py` directly when you prefer explicit
 manifest paths. Local image-only training uses an identity target camera, so

@@ -225,8 +225,6 @@ def _build_optimizer_param_groups(
     unik3d_encoder_params: list[torch.nn.Parameter] = []
     unik3d_decoder_params: list[torch.nn.Parameter] = []
     for name, param in raw_model.named_parameters():
-        if not param.requires_grad:
-            continue
         if name.startswith("feature_extractor.unik3d.pixel_encoder."):
             unik3d_encoder_params.append(param)
         elif name.startswith("second_layer_depth_head."):
@@ -236,6 +234,71 @@ def _build_optimizer_param_groups(
         else:
             base_params.append(param)
     return base_params, unik3d_encoder_params, unik3d_decoder_params
+
+
+def _set_module_requires_grad(module: torch.nn.Module, enabled: bool) -> None:
+    for parameter in module.parameters():
+        parameter.requires_grad_(bool(enabled))
+
+
+def _set_unik3d_decoder_requires_grad(raw_model: UnisharpFeatureModel, enabled: bool) -> None:
+    unik3d = raw_model.feature_extractor.unik3d
+    for name, parameter in unik3d.named_parameters():
+        if not name.startswith("pixel_encoder."):
+            parameter.requires_grad_(bool(enabled))
+    _set_module_requires_grad(raw_model.second_layer_depth_head, enabled)
+
+
+def _set_unik3d_encoder_requires_grad(
+    raw_model: UnisharpFeatureModel,
+    *,
+    last_n_blocks: int,
+    full: bool,
+) -> int:
+    """Freeze the encoder or expose only its final DINO blocks for tuning."""
+    encoder = raw_model.feature_extractor.unik3d.pixel_encoder
+    _set_module_requires_grad(encoder, False)
+    if full:
+        _set_module_requires_grad(encoder, True)
+        return -1
+    blocks = getattr(encoder, "blocks", None)
+    if not isinstance(blocks, (torch.nn.ModuleList, torch.nn.Sequential, list, tuple)):
+        if int(last_n_blocks) > 0:
+            raise RuntimeError("UniK3D pixel_encoder exposes no ordered `blocks`; cannot partially unfreeze it.")
+        return 0
+    count = min(max(0, int(last_n_blocks)), len(blocks))
+    if count == 0:
+        return 0
+    for block in list(blocks)[-count:]:
+        _set_module_requires_grad(block, True)
+    # DINO's final normalization belongs to the final representation and must
+    # adapt together with the last blocks.
+    norm = getattr(encoder, "norm", None)
+    if isinstance(norm, torch.nn.Module):
+        _set_module_requires_grad(norm, True)
+    return count
+
+
+def _apply_progressive_unfreeze(
+    raw_model: UnisharpFeatureModel,
+    *,
+    step: int,
+    decoder_unfreeze_step: int,
+    encoder_unfreeze_step: int,
+    encoder_last_n_blocks: int,
+    encoder_full_unfreeze_step: int,
+) -> str:
+    decoder_enabled = int(step) >= int(decoder_unfreeze_step)
+    _set_unik3d_decoder_requires_grad(raw_model, decoder_enabled)
+    full_encoder = int(encoder_full_unfreeze_step) > 0 and int(step) >= int(encoder_full_unfreeze_step)
+    partial_encoder = (not full_encoder) and int(step) >= int(encoder_unfreeze_step)
+    exposed_blocks = _set_unik3d_encoder_requires_grad(
+        raw_model,
+        last_n_blocks=int(encoder_last_n_blocks) if partial_encoder else 0,
+        full=full_encoder,
+    )
+    encoder_phase = "full" if exposed_blocks < 0 else f"last_{exposed_blocks}_blocks"
+    return f"decoder={'on' if decoder_enabled else 'frozen'},encoder={encoder_phase}"
 
 
 def _count_numel(params: list[torch.nn.Parameter]) -> int:
@@ -484,6 +547,11 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--unik3d-lr1", type=float, default=2.5e-6, help="UniK3D decoder/head final LR.")
 @click.option("--unik3d-encoder-lr0", type=float, default=1.5e-6, help="UniK3D pixel_encoder peak LR.")
 @click.option("--unik3d-encoder-lr1", type=float, default=1.5e-7, help="UniK3D pixel_encoder final LR.")
+@click.option("--unik3d-progressive-unfreeze/--no-unik3d-progressive-unfreeze", default=False, show_default=True, help="Freeze UniK3D first, then progressively unfreeze decoder and encoder blocks.")
+@click.option("--unik3d-decoder-unfreeze-step", type=click.IntRange(0, None), default=20000, show_default=True, help="Step at which the UniK3D decoder/head is unfrozen.")
+@click.option("--unik3d-encoder-unfreeze-step", type=click.IntRange(0, None), default=50000, show_default=True, help="Step at which final UniK3D encoder blocks are unfrozen.")
+@click.option("--unik3d-encoder-last-n-blocks", type=click.IntRange(0, None), default=4, show_default=True, help="Number of final encoder blocks to unfreeze in phase three; 0 keeps encoder frozen.")
+@click.option("--unik3d-encoder-full-unfreeze-step", type=click.IntRange(0, None), default=0, show_default=True, help="Optional full encoder unfreeze step; 0 disables full encoder tuning.")
 @click.option("--grad-clip-norm", type=float, default=1.0, show_default=True)
 @click.option("--max-step-grad-norm", type=float, default=100000.0, show_default=True, help="Skip optimizer step when pre-clip grad norm exceeds this value. 0 disables.")
 @click.option("--max-depth-m", type=float, default=DEFAULT_MAX_DEPTH_M, show_default=True)
@@ -598,6 +666,11 @@ def train_feature_cli(
     unik3d_lr1: float,
     unik3d_encoder_lr0: float,
     unik3d_encoder_lr1: float,
+    unik3d_progressive_unfreeze: bool,
+    unik3d_decoder_unfreeze_step: int,
+    unik3d_encoder_unfreeze_step: int,
+    unik3d_encoder_last_n_blocks: int,
+    unik3d_encoder_full_unfreeze_step: int,
     grad_clip_norm: float,
     max_step_grad_norm: float,
     max_depth_m: float,
@@ -1295,6 +1368,24 @@ def train_feature_cli(
         )
 
     raw_model = model.module if isinstance(model, DDP) else model
+    if bool(unik3d_progressive_unfreeze):
+        if int(unik3d_decoder_unfreeze_step) > int(unik3d_encoder_unfreeze_step):
+            raise ValueError("--unik3d-decoder-unfreeze-step must be <= --unik3d-encoder-unfreeze-step.")
+        if (
+            int(unik3d_encoder_full_unfreeze_step) > 0
+            and int(unik3d_encoder_full_unfreeze_step) < int(unik3d_encoder_unfreeze_step)
+        ):
+            raise ValueError("--unik3d-encoder-full-unfreeze-step must be 0 or >= --unik3d-encoder-unfreeze-step.")
+        initial_unfreeze_phase = _apply_progressive_unfreeze(
+            raw_model,
+            step=0,
+            decoder_unfreeze_step=int(unik3d_decoder_unfreeze_step),
+            encoder_unfreeze_step=int(unik3d_encoder_unfreeze_step),
+            encoder_last_n_blocks=int(unik3d_encoder_last_n_blocks),
+            encoder_full_unfreeze_step=int(unik3d_encoder_full_unfreeze_step),
+        )
+    else:
+        initial_unfreeze_phase = "disabled (all UniK3D parameters trainable)"
     base_params, unik3d_encoder_params, unik3d_decoder_params = _build_optimizer_param_groups(raw_model)
     unik3d_params = unik3d_encoder_params + unik3d_decoder_params
     trainable_params = base_params + unik3d_params
@@ -1302,10 +1393,10 @@ def train_feature_cli(
         raise RuntimeError("No trainable parameters found.")
     if len(unik3d_params) == 0:
         raise RuntimeError(
-            "No UniK3D parameters were collected for the default unfreeze training path. "
+            "No UniK3D parameters were collected for the progressive-unfreeze path. "
             "Please check parameter naming."
         )
-    depth_head_params = [p for p in raw_model.second_layer_depth_head.parameters() if p.requires_grad]
+    depth_head_params = list(raw_model.second_layer_depth_head.parameters())
     if len(depth_head_params) == 0:
         raise RuntimeError("Depth heads have no trainable parameters; depth branch would not train.")
 
@@ -1329,8 +1420,8 @@ def train_feature_cli(
     opt = torch.optim.Adam(opt_groups)
     if is_main:
         LOGGER.info(
-            "Model ready: scratch heads, pretrained UniK3D, trainable_params=%d",
-            _count_numel(trainable_params),
+            "Model ready: scratch heads, pretrained UniK3D, optimizer_params=%d, initial_unfreeze=%s",
+            _count_numel(trainable_params), initial_unfreeze_phase,
         )
     if dev.type == "cuda":
         scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -1400,6 +1491,11 @@ def train_feature_cli(
             "renderer_backend": str(renderer_backend),
             "portable_renderer_max_gaussians": int(portable_renderer_max_gaussians),
             "portable_renderer_max_gaussians_per_tile": int(portable_renderer_max_gaussians_per_tile),
+            "unik3d_progressive_unfreeze": bool(unik3d_progressive_unfreeze),
+            "unik3d_decoder_unfreeze_step": int(unik3d_decoder_unfreeze_step),
+            "unik3d_encoder_unfreeze_step": int(unik3d_encoder_unfreeze_step),
+            "unik3d_encoder_last_n_blocks": int(unik3d_encoder_last_n_blocks),
+            "unik3d_encoder_full_unfreeze_step": int(unik3d_encoder_full_unfreeze_step),
         }
         (out_dir / "config.json").write_text(
             json.dumps(config_dict, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -1441,7 +1537,21 @@ def train_feature_cli(
     dataset_epochs: dict[str, int] = {name: 0 for name in dataloaders.keys()}
     dataset_samplers: dict[str, DistributedSampler | None] = {"hm3d": hm3d_sampler}
 
+    last_unfreeze_phase = initial_unfreeze_phase
     for step in range(1, steps + 1):
+        if bool(unik3d_progressive_unfreeze):
+            unfreeze_phase = _apply_progressive_unfreeze(
+                raw_model,
+                step=step,
+                decoder_unfreeze_step=int(unik3d_decoder_unfreeze_step),
+                encoder_unfreeze_step=int(unik3d_encoder_unfreeze_step),
+                encoder_last_n_blocks=int(unik3d_encoder_last_n_blocks),
+                encoder_full_unfreeze_step=int(unik3d_encoder_full_unfreeze_step),
+            )
+            if unfreeze_phase != last_unfreeze_phase:
+                if is_main:
+                    LOGGER.info("UniK3D progressive-unfreeze step=%d: %s", step, unfreeze_phase)
+                last_unfreeze_phase = unfreeze_phase
         lr = warmup_cosine_lr(step, warmup, steps, lr0, lr1)
         lr_unik3d_encoder = warmup_cosine_lr(step, warmup, steps, unik3d_encoder_lr0, unik3d_encoder_lr1)
         lr_unik3d_decoder = warmup_cosine_lr(step, warmup, steps, unik3d_lr0, unik3d_lr1)

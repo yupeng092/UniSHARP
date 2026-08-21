@@ -95,6 +95,10 @@ plyfile>=1.0.3
 #   novel-view supervision, set LOCAL_COLMAP_ROOT to a local COLMAP text
 #   reconstruction and set LOCAL_MULTIVIEW_WEIGHT=1.0; the launcher converts
 #   cameras.txt/images.txt to local_multiview.jsonl automatically.
+# * The local portrait NPU launchers enable progressive UniK3D tuning: freeze
+#   encoder/decoder first, unfreeze decoder at step 20000, then the final four
+#   encoder blocks at step 50000. Set UNIK3D_ENCODER_FULL_UNFREEZE_STEP>0 only
+#   for a deliberate final all-encoder adaptation stage.
 # * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
 #   release is not already packed. Build the required DL3DV per-image depth
 #   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.
