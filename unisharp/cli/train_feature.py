@@ -469,6 +469,8 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--openimages-person-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--ffhq-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--neuman-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
+@click.option("--local-images-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None, help="Image-list or JSONL manifest for your local single-view photos.")
+@click.option("--local-multiview-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None, help="Calibrated JSONL manifest for your local multi-view photos.")
 @click.option("--dataset-manifest-dir", type=click.Path(path_type=Path, file_okay=False), default=None)
 @click.option("--out-root", type=click.Path(path_type=Path, file_okay=False), required=True)
 @click.option("--run-name", type=str, default=None)
@@ -548,6 +550,8 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--dataset-weight-openimages-person", type=float, default=0.0, help="Open Images V7 outdoor/person appearance weight.")
 @click.option("--dataset-weight-ffhq", type=float, default=0.0, help="FFHQ high-resolution face appearance weight.")
 @click.option("--dataset-weight-neuman", type=float, default=0.0, help="NeuMan calibrated public human-video geometry weight.")
+@click.option("--dataset-weight-local-images", type=float, default=0.0, help="Your local single-view image appearance weight.")
+@click.option("--dataset-weight-local-multiview", type=float, default=0.0, help="Your local calibrated multi-view geometry weight.")
 @click.option("--dataset-fraction-re10k", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available RE10K chunks used for this run.")
 @click.option("--dataset-fraction-wildrgbd", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available WildRGB-D scenes used for this run.")
 @click.option("--dataset-fraction-dl3dv", type=click.FloatRange(0.0, 1.0), default=1.0, show_default=True, help="Deterministic fraction of available DL3DV scenes used for this run.")
@@ -579,6 +583,8 @@ def train_feature_cli(
     openimages_person_manifest: Path | None,
     ffhq_manifest: Path | None,
     neuman_manifest: Path | None,
+    local_images_manifest: Path | None,
+    local_multiview_manifest: Path | None,
     dataset_manifest_dir: Path | None,
     out_root: Path,
     run_name: str | None,
@@ -658,6 +664,8 @@ def train_feature_cli(
     dataset_weight_openimages_person: float,
     dataset_weight_ffhq: float,
     dataset_weight_neuman: float,
+    dataset_weight_local_images: float,
+    dataset_weight_local_multiview: float,
     dataset_fraction_re10k: float,
     dataset_fraction_wildrgbd: float,
     dataset_fraction_dl3dv: float,
@@ -772,6 +780,8 @@ def train_feature_cli(
     openimages_person_enabled_for_train = bool(float(dataset_weight_openimages_person) > 0.0)
     ffhq_enabled_for_train = bool(float(dataset_weight_ffhq) > 0.0)
     neuman_enabled_for_train = bool(float(dataset_weight_neuman) > 0.0)
+    local_images_enabled_for_train = bool(float(dataset_weight_local_images) > 0.0)
+    local_multiview_enabled_for_train = bool(float(dataset_weight_local_multiview) > 0.0)
     wild_roots = _read_nonempty_lines(wild_roots_file) if wild_roots_file is not None and wild_roots_file.exists() else []
     re10k_manifest = _resolve_manifest_file(dataset_manifest_dir, "re10k_train_chunks.txt")
     hm3d_manifest = _resolve_manifest_file(dataset_manifest_dir, "hm3d_train_scenes.txt")
@@ -812,6 +822,10 @@ def train_feature_cli(
         raise ValueError("dataset_weight_ffhq>0 but --ffhq-manifest is missing.")
     if neuman_enabled_for_train and neuman_manifest is None:
         raise ValueError("dataset_weight_neuman>0 but --neuman-manifest is missing.")
+    if local_images_enabled_for_train and local_images_manifest is None:
+        raise ValueError("dataset_weight_local_images>0 but --local-images-manifest is missing.")
+    if local_multiview_enabled_for_train and local_multiview_manifest is None:
+        raise ValueError("dataset_weight_local_multiview>0 but --local-multiview-manifest is missing.")
 
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1029,6 +1043,18 @@ def train_feature_cli(
             neuman_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
             ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 59,
         )
+    local_images_ds = None
+    if local_images_enabled_for_train:
+        local_images_ds = AppearanceDataset(
+            local_images_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+            ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 73,
+        )
+    local_multiview_ds = None
+    if local_multiview_enabled_for_train:
+        local_multiview_ds = CalibratedMultiViewDataset(
+            local_multiview_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+            ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 79,
+        )
 
     hm3d_sampler = None
     if hm3d_ds is not None and _ddp_is_enabled():
@@ -1154,6 +1180,18 @@ def train_feature_cli(
             neuman_ds, batch_size=batch_size,
             **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
         )
+    local_images_dl = None
+    if local_images_ds is not None:
+        local_images_dl = DataLoader(
+            local_images_ds, batch_size=batch_size,
+            **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
+        )
+    local_multiview_dl = None
+    if local_multiview_ds is not None:
+        local_multiview_dl = DataLoader(
+            local_multiview_ds, batch_size=batch_size,
+            **_loader_worker_kwargs(num_workers, pin_memory=standard_pin_memory), collate_fn=re10k_collate,
+        )
 
     candidate_datasets: dict[str, Any] = {}
     candidate_dataloaders: dict[str, DataLoader] = {}
@@ -1202,6 +1240,14 @@ def train_feature_cli(
         candidate_datasets["neuman"] = neuman_ds
         candidate_dataloaders["neuman"] = neuman_dl
         candidate_weights["neuman"] = float(dataset_weight_neuman)
+    if local_images_ds is not None and local_images_dl is not None:
+        candidate_datasets["local_images"] = local_images_ds
+        candidate_dataloaders["local_images"] = local_images_dl
+        candidate_weights["local_images"] = float(dataset_weight_local_images)
+    if local_multiview_ds is not None and local_multiview_dl is not None:
+        candidate_datasets["local_multiview"] = local_multiview_ds
+        candidate_dataloaders["local_multiview"] = local_multiview_dl
+        candidate_weights["local_multiview"] = float(dataset_weight_local_multiview)
 
     datasets: dict[str, Any] = {}
     dataloaders: dict[str, DataLoader] = {}

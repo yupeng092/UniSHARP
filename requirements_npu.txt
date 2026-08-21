@@ -84,11 +84,17 @@ plyfile>=1.0.3
 #   `--assets coco-person openimages-person neuman`; FFHQ's full 1024px
 #   source is ~89 GB and is deliberately opt-in with `--assets ffhq
 #   --ffhq-download-images`. Check FFHQ's CC BY-NC-SA license before use.
-# * `train_npu_portrait_portable.sh` and its `_ddp` counterpart consume the
-#   COCO/Open Images JSONL box manifests directly and require a calibrated
-#   NeuMan scene JSONL manifest. Use scripts/prepare_calibrated_colmap.py to
-#   convert a direct-download COLMAP-text reconstruction to OpenCV w2c/pixel-K
-#   rows. FFHQ's image-list manifest is optional when FFHQ_WEIGHT is nonzero.
+# * The generic `train-feature` CLI can consume COCO/Open Images/NeuMan/FFHQ
+#   manifests. The portrait NPU launchers are local-data launchers; use
+#   scripts/prepare_calibrated_colmap.py to convert any local COLMAP-text
+#   reconstruction to OpenCV w2c/pixel-K rows when you need novel-view
+#   supervision.
+# * To train exclusively on your own photos, set LOCAL_IMAGES_ROOT before
+#   launching either portrait NPU script. It recursively writes
+#   local_images.txt and enables the local appearance branch. For real
+#   novel-view supervision, set LOCAL_COLMAP_ROOT to a local COLMAP text
+#   reconstruction and set LOCAL_MULTIVIEW_WEIGHT=1.0; the launcher converts
+#   cameras.txt/images.txt to local_multiview.jsonl automatically.
 # * Prepare RE10K with scripts/prepare_re10k_chunks.py when the official
 #   release is not already packed. Build the required DL3DV per-image depth
 #   tree with scripts/prepare_dl3dv_unik3d_depth.py on the NPU.

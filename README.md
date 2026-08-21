@@ -217,33 +217,64 @@ python scripts/download_npu_assets.py \
   --coco-person-max-images 5000 \
   --openimages-person-max-images 10000
 python scripts/download_npu_assets.py --assets ffhq --ffhq-download-images
+```
 
-# Build the calibrated geometry manifest from the direct NeuMan release. The
-# converter accepts standard COLMAP text camera files when present.
+### Train on your own local dataset
+
+The portrait NPU launchers now use local data by default. For an ordinary
+directory of JPG/PNG/WebP photos, set `LOCAL_IMAGES_ROOT`; the launcher writes
+`dataset_manifests/local_images.txt` automatically and trains the appearance
+branch:
+
+```bash
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
-python scripts/prepare_calibrated_colmap.py \
-  --source-root "$PWD/datasets/neuman" \
-  --manifest "$DATASET_MANIFEST_DIR/neuman_train.jsonl"
-
-# COCO and Open Images provide real outdoor-person appearance. NeuMan is a
-# small direct-download calibrated human-video geometry source. FFHQ is
-# optional high-resolution face appearance augmentation.
-export NEUMAN_MANIFEST="$DATASET_MANIFEST_DIR/neuman_train.jsonl"
+export LOCAL_IMAGES_ROOT="/data/my_portraits"
 UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+```
 
-# Enable FFHQ only after its 1024px images and image list have been prepared.
-FFHQ_WEIGHT=0.5 FFHQ_MANIFEST="$DATASET_MANIFEST_DIR/ffhq_images.txt" \
+To mix several local/downloaded image folders into one appearance dataset,
+create an explicit manifest and point the launcher at it:
+
+```bash
+python scripts/prepare_local_images.py \
+  --source-root /data/my_portraits /data/downloaded/coco_person/images /data/downloaded/openimages_person/images \
+  --manifest "$PWD/dataset_manifests/my_mixed_images.txt"
+
+LOCAL_IMAGES_MANIFEST="$PWD/dataset_manifests/my_mixed_images.txt" \
   UNIK3D_BACKBONE=vits bash scripts/train_npu_portrait_portable.sh
+```
 
-# Single-node multi-card variant.
-NPU_IDS=0,1,2,3 UNIK3D_BACKBONE=vitb bash scripts/train_npu_portrait_portable_ddp.sh
+For true novel-view supervision, your local capture must contain matched views
+and calibrated cameras. If it has standard COLMAP `cameras.txt`/`images.txt`,
+set `LOCAL_COLMAP_ROOT` and enable the multi-view branch; the launcher creates
+the calibrated JSONL manifest automatically:
 
-# Calibrated human JSONL schema (one scene per line). `w2c` uses OpenCV
-# world-to-camera convention and intrinsics are pixel 3x3 matrices.
+```bash
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export LOCAL_IMAGES_ROOT="/data/my_portraits"
+export LOCAL_COLMAP_ROOT="/data/my_multiview_colmap"
+LOCAL_MULTIVIEW_WEIGHT=1.0 UNIK3D_BACKBONE=vitb \
+  bash scripts/train_npu_portrait_portable.sh
+```
+
+Use `scripts/prepare_local_images.py` and
+`scripts/prepare_calibrated_colmap.py` directly when you prefer explicit
+manifest paths. Local image-only training uses an identity target camera, so
+it improves portrait appearance but cannot replace calibrated multi-view data.
+
+Calibrated JSONL schema (one scene per line). `w2c` uses OpenCV
+world-to-camera convention and intrinsics are pixel 3×3 matrices:
+
+```json
 {"scene":"subject/expression","frames":[
   {"image":"/data/face/000.jpg","intrinsics":[[fx,0,cx],[0,fy,cy],[0,0,1]],"w2c":[[...],[...],[...],[0,0,0,1]]},
   {"image":"/data/face/001.jpg","intrinsics":[[fx,0,cx],[0,fy,cy],[0,0,1]],"w2c":[[...],[...],[...],[0,0,0,1]]}
 ]}
+```
+
+For the separate public mixed-data recipe:
+
+```bash
 # Convert RE10K frames/cameras, then generate DL3DV pseudo z-depth on the NPU.
 python scripts/prepare_re10k_chunks.py \
   --source-root /path/to/re10k_frames_and_metadata \
