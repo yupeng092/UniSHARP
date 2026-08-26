@@ -340,17 +340,26 @@ the Gaussian decoder. The new FiLM layer is zero-initialized, so a released
 checkpoint starts with unchanged output and learns the target-view behavior
 during fine-tuning.
 
+No dataset is selected by default: append the normal `train-feature` dataset
+arguments for exactly the calibrated data you want to use. For example, RE10K
+is optional:
+
 ```bash
 export INIT_CHECKPOINT="$PWD/checkpoints/released/pretained_model.pt"
-export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
-export DATA_ROOT_RE10K=/data/re10k
-export DATA_ROOT_WILDRGBD=/data/wildrgbd
-export DATA_ROOT_DL3DV=/data/dl3dv
-export DATA_ROOT_DL3DV_DEPTH=/data/dl3dv_depth
 
-TARGET_RIG_EMBED_DIM=128 \
-TARGET_RIG_TRANSLATION_SCALE=1.0 \
-bash scripts/train_npu_target_rig_finetune.sh
+bash scripts/train_npu_target_rig_finetune.sh \
+  --dataset-weight-re10k 1 \
+  --data-root-re10k /data/re10k \
+  --dataset-manifest-dir "$PWD/dataset_manifests"
+```
+
+For your own calibrated multi-view data, use a JSONL manifest produced by
+`prepare_calibrated_colmap.py` (or the documented calibrated JSONL schema):
+
+```bash
+bash scripts/train_npu_target_rig_finetune.sh \
+  --dataset-weight-local-multiview 1 \
+  --local-multiview-manifest /data/my_scene/calibrated_train.jsonl
 ```
 
 The current datasets supervise one calibrated target per source sample, while
@@ -362,9 +371,18 @@ because released checkpoints do not contain the newly added rig encoder.
 
 For a local CPU smoke test of the same conditioned path, use either
 `scripts/train_cpu_target_rig_finetune.sh` or, on Windows,
-`scripts/train_cpu_target_rig_finetune.ps1`. Both use calibrated RE10K pairs,
-`256x384` by default, and ten steps by default; they validate correctness and
-are not practical full CPU training launchers.
+`scripts/train_cpu_target_rig_finetune.ps1`. Both use the dataset arguments
+you supply, default to `256x384` and ten steps, and validate correctness; they
+are not practical full CPU training launchers. For example:
+
+```powershell
+.\scripts\train_cpu_target_rig_finetune.ps1 `
+  -InitCheckpoint "$PWD\checkpoints\released\pretained_model.pt" `
+  -ExtraArgs @(
+    '--dataset-weight-local-multiview', '1',
+    '--local-multiview-manifest', 'D:\data\my_scene\calibrated_train.jsonl'
+  )
+```
 
 ```bash
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"

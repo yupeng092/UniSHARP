@@ -1,12 +1,12 @@
 <#
 Low-resolution Windows CPU smoke test for target-rig-conditioned fine-tuning.
-It requires calibrated RE10K pairs and validates only the training chain; use
-the NPU launcher for a full-resolution fine-tuning run.
+Pass train-feature dataset flags through `-ExtraArgs`; it does not select
+RE10K or any other dataset implicitly. Use calibrated multi-view data for
+meaningful target-camera supervision. Use the NPU launcher for a full-resolution
+run.
 #>
 [CmdletBinding()]
 param(
-    [string]$DatasetManifestDir = $env:DATASET_MANIFEST_DIR,
-    [string]$DataRootRe10K = $env:DATA_ROOT_RE10K,
     [string]$InitCheckpoint = $env:INIT_CHECKPOINT,
     [string]$OutRoot = "",
     [string]$RunName = "",
@@ -23,8 +23,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ([string]::IsNullOrWhiteSpace($DatasetManifestDir)) { throw "Set -DatasetManifestDir or DATASET_MANIFEST_DIR." }
-if ([string]::IsNullOrWhiteSpace($DataRootRe10K)) { throw "Set -DataRootRe10K or DATA_ROOT_RE10K." }
 if ([string]::IsNullOrWhiteSpace($InitCheckpoint)) { throw "Set -InitCheckpoint or INIT_CHECKPOINT." }
 if (-not (Test-Path -LiteralPath $InitCheckpoint -PathType Leaf)) { throw "Checkpoint was not found: $InitCheckpoint" }
 if ([string]::IsNullOrWhiteSpace($OutRoot)) { $OutRoot = Join-Path $repoRoot "outputs_cpu" }
@@ -45,9 +43,11 @@ $trainArgs = @(
     "--target-rig-conditioning", "--target-rig-embedding-dim", "$TargetRigEmbedDim",
     "--target-rig-translation-scale", "$TargetRigTranslationScale",
     "--save-every", "$([Math]::Max(1, $Steps))", "--log-every", "1", "--vis-every", "0", "--lambda-percep", "0",
-    "--dataset-weight-re10k", "1", "--dataset-weight-hm3d", "0", "--dataset-weight-sim", "0",
+    "--dataset-weight-re10k", "0", "--dataset-weight-hm3d", "0", "--dataset-weight-sim", "0",
     "--dataset-weight-wildrgbd", "0", "--dataset-weight-dl3dv", "0", "--dataset-weight-scanetpp", "0",
-    "--data-root-re10k", $DataRootRe10K, "--dataset-manifest-dir", $DatasetManifestDir
+    "--dataset-weight-coco-person", "0", "--dataset-weight-widerface", "0", "--dataset-weight-openimages-person", "0",
+    "--dataset-weight-crowdhuman", "0", "--dataset-weight-ffhq", "0", "--dataset-weight-neuman", "0",
+    "--dataset-weight-nerfies", "0", "--dataset-weight-local-images", "0", "--dataset-weight-local-multiview", "0"
 )
 
 & python @trainArgs @ExtraArgs

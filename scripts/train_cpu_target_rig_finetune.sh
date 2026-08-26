@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Low-resolution CPU correctness run for target-rig-conditioned fine-tuning.
+# Pass the dataset flags accepted by `python -m unisharp.cli train-feature`
+# after this script. No dataset (including RE10K) is selected implicitly.
 # It validates calibrated-pair loading, forward/backward and checkpoint output;
 # use train_npu_target_rig_finetune.sh for an actual fine-tuning job.
 set -euo pipefail
@@ -10,8 +12,6 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/UniK3D:${PYTHONPATH:-}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-: "${DATASET_MANIFEST_DIR:?Set DATASET_MANIFEST_DIR to the UniSHARP manifests directory.}"
-: "${DATA_ROOT_RE10K:?Set DATA_ROOT_RE10K to the processed RE10K root.}"
 INIT_CHECKPOINT="${INIT_CHECKPOINT:?Set INIT_CHECKPOINT to a released UniSHARP checkpoint.}"
 [[ -f "${INIT_CHECKPOINT}" ]] || { echo "Checkpoint was not found: ${INIT_CHECKPOINT}" >&2; exit 1; }
 
@@ -34,7 +34,9 @@ exec python -m unisharp.cli train-feature \
   --init-checkpoint "${INIT_CHECKPOINT}" --no-init-checkpoint-strict \
   --target-rig-conditioning --target-rig-embedding-dim "${TARGET_RIG_EMBED_DIM}" --target-rig-translation-scale "${TARGET_RIG_TRANSLATION_SCALE}" \
   --save-every "${STEPS}" --log-every 1 --vis-every 0 --lambda-percep 0 \
-  --dataset-weight-re10k 1 --dataset-weight-hm3d 0 --dataset-weight-sim 0 \
+  --dataset-weight-re10k 0 --dataset-weight-hm3d 0 --dataset-weight-sim 0 \
   --dataset-weight-wildrgbd 0 --dataset-weight-dl3dv 0 --dataset-weight-scanetpp 0 \
-  --data-root-re10k "${DATA_ROOT_RE10K}" --dataset-manifest-dir "${DATASET_MANIFEST_DIR}" \
+  --dataset-weight-coco-person 0 --dataset-weight-widerface 0 --dataset-weight-openimages-person 0 \
+  --dataset-weight-crowdhuman 0 --dataset-weight-ffhq 0 --dataset-weight-neuman 0 \
+  --dataset-weight-nerfies 0 --dataset-weight-local-images 0 --dataset-weight-local-multiview 0 \
   "$@"
