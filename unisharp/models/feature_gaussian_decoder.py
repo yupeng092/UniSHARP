@@ -121,6 +121,7 @@ class FeatureGaussianDecoderParams:
 
     use_learned_upsampling: bool = False
     target_resolution: tuple[int, int] | None = None
+    target_rig_embedding_dim: int = 0
 
 
 class Feature2DEncoder(nn.Module):
@@ -297,6 +298,15 @@ class FeatureGaussianDecoder(nn.Module):
             params.dim_decoder_out,
             params.dim_2d_out,
         )
+        self.target_rig_affine = (
+            nn.Linear(int(params.target_rig_embedding_dim), 2 * int(params.dim_decoder_out))
+            if int(params.target_rig_embedding_dim) > 0
+            else None
+        )
+        if self.target_rig_affine is not None:
+            # Preserve the unconditioned checkpoint behaviour at initialization.
+            nn.init.zeros_(self.target_rig_affine.weight)
+            nn.init.zeros_(self.target_rig_affine.bias)
         
         self.texture_head = self._create_head(
             params.dim_decoder_out,
@@ -348,6 +358,7 @@ class FeatureGaussianDecoder(nn.Module):
         *,
         circular_horizontal: bool = False,
         target_hw: tuple[int, int] | None = None,
+        target_rig_embedding: torch.Tensor | None = None,
     ) -> ImageFeatures:
         _set_circular_horizontal(self, bool(circular_horizontal))
         features_3d_sorted = sorted(
@@ -380,6 +391,21 @@ class FeatureGaussianDecoder(nn.Module):
         )
         
         fused = self.fusion(decoder_out, features_2d_proj)
+        if self.target_rig_affine is not None:
+            if target_rig_embedding is None:
+                target_rig_embedding = torch.zeros(
+                    (int(fused.shape[0]), int(self.params.target_rig_embedding_dim)),
+                    device=fused.device,
+                    dtype=fused.dtype,
+                )
+            if target_rig_embedding.ndim != 2 or int(target_rig_embedding.shape[0]) != int(fused.shape[0]):
+                raise ValueError(
+                    "target_rig_embedding must have shape (B,D) matching decoded features, "
+                    f"got {tuple(target_rig_embedding.shape)} for B={int(fused.shape[0])}"
+                )
+            affine = self.target_rig_affine(target_rig_embedding.to(device=fused.device, dtype=fused.dtype))
+            scale, bias = affine.chunk(2, dim=1)
+            fused = fused * (1.0 + torch.tanh(scale)[:, :, None, None]) + bias[:, :, None, None]
         
         if target_hw is not None:
             target_h, target_w = int(target_hw[0]), int(target_hw[1])

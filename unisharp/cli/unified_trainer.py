@@ -916,6 +916,7 @@ class UnifiedTrainer:
         src = src_u8.float().clamp(0, 255) / 255.0
         tgt = tgt_u8.float().clamp(0, 255) / 255.0
         distance_init_cap_m = self._distance_init_cap_for_dataset(dataset_name)
+        rel_tgt_w2c_all = tgt_w2c @ invert_rigid_transform(src_w2c)
         
         share_src_forward = bool(getattr(batch, "share_src_forward", False)) and int(src.shape[0]) > 1
 
@@ -936,6 +937,8 @@ class UnifiedTrainer:
                 camera_model="pinhole",
                 depth_gt=(src_depth_gt_dist[0:1] if torch.is_tensor(src_depth_gt_dist) else None),
                 distance_init_cap_m=distance_init_cap_m,
+                target_rig_w2c=rel_tgt_w2c_all.unsqueeze(0),
+                target_rig_intrinsics=tgt_k3.unsqueeze(0),
                 return_aux=True,
             )
             out = {k: _repeat_first_dim(v, int(src.shape[0])) for k, v in out_single.items()}
@@ -947,6 +950,8 @@ class UnifiedTrainer:
                 camera_model="pinhole",
                 depth_gt=src_depth_gt_dist,
                 distance_init_cap_m=distance_init_cap_m,
+                target_rig_w2c=rel_tgt_w2c_all.unsqueeze(1),
+                target_rig_intrinsics=tgt_k3.unsqueeze(1),
                 return_aux=True,
             )
         gaussians = out["gaussians"]
@@ -966,7 +971,7 @@ class UnifiedTrainer:
             tgt_h = int(tgt_u8.shape[-2])
             tgt_w = int(tgt_u8.shape[-1])
             ident = torch.eye(4, dtype=src_w2c.dtype, device=self.device).unsqueeze(0)
-            rel_tgt_w2c = tgt_w2c[b : b + 1] @ invert_rigid_transform(src_w2c[b : b + 1])
+            rel_tgt_w2c = rel_tgt_w2c_all[b : b + 1]
             src_k_render_b = src_render_k3[b : b + 1]
             tgt_k_render_b = tgt_render_k3[b : b + 1]
             src_out = self.renderer(

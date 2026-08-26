@@ -16,6 +16,7 @@ from unisharp.models.heads import (
 from unisharp.models.gaussian_composer import PanoGaussianComposer
 from unisharp.models.unisharp_params import PanoPredictorParams
 from unisharp.models.feature_gaussian_decoder import ImageFeatures
+from unisharp.models.target_rig_encoder import TargetRigEncoder
 from unisharp import DEFAULT_MAX_DEPTH_M
 from unisharp.utils.gaussians import Gaussians3D
 
@@ -31,6 +32,9 @@ class UnisharpFeatureConfig:
     max_distance_m: float = DEFAULT_MAX_DEPTH_M
     detach_init_layer0_distance: bool = True
     delta_rho_limit: float = 2.0
+    target_rig_conditioning: bool = False
+    target_rig_embedding_dim: int = 128
+    target_rig_translation_scale: float = 1.0
 
 
 class UniK3DCopiedDepthHead(nn.Module):
@@ -155,6 +159,7 @@ class UnisharpFeatureModel(nn.Module):
                 dim_texture_out=32,
                 dim_geometry_out=32,
                 stride_out=int(max(1, config.initializer_stride)),
+                target_rig_embedding_dim=(int(config.target_rig_embedding_dim) if config.target_rig_conditioning else 0),
             )
         elif config.unik3d_backbone == "vitb":
             dino_feature_dim = 768
@@ -167,6 +172,7 @@ class UnisharpFeatureModel(nn.Module):
                 dim_texture_out=32,
                 dim_geometry_out=32,
                 stride_out=int(max(1, config.initializer_stride)),
+                target_rig_embedding_dim=(int(config.target_rig_embedding_dim) if config.target_rig_conditioning else 0),
             )
         elif config.unik3d_backbone == "vits":
             # UniK3D-ViT-S has a 384-channel DINO encoder and a radial
@@ -183,6 +189,7 @@ class UnisharpFeatureModel(nn.Module):
                 dim_texture_out=32,
                 dim_geometry_out=32,
                 stride_out=int(max(1, config.initializer_stride)),
+                target_rig_embedding_dim=(int(config.target_rig_embedding_dim) if config.target_rig_conditioning else 0),
             )
         else:
             raise ValueError(f"Unsupported UniK3D backbone: {config.unik3d_backbone!r}")
@@ -194,6 +201,14 @@ class UnisharpFeatureModel(nn.Module):
         
         self.decoder_params = decoder_params
         self.feature_decoder = create_feature_gaussian_decoder(decoder_params)
+        self.target_rig_encoder = (
+            TargetRigEncoder(
+                int(config.target_rig_embedding_dim),
+                translation_scale=float(config.target_rig_translation_scale),
+            )
+            if bool(config.target_rig_conditioning)
+            else None
+        )
         
         params = PanoPredictorParams()
         params.initializer.stride = config.initializer_stride
@@ -591,6 +606,9 @@ class UnisharpFeatureModel(nn.Module):
         depth_gt: torch.Tensor | None = None,
         distance_init_cap_m: float | None = None,
         validity_mask: torch.Tensor | None = None,
+        target_rig_w2c: torch.Tensor | None = None,
+        target_rig_intrinsics: torch.Tensor | None = None,
+        target_rig_valid_mask: torch.Tensor | None = None,
         return_aux: bool = False,
     ) -> dict[str, Any] | Any:
         _, _, H, W = image.shape
@@ -737,11 +755,23 @@ class UnisharpFeatureModel(nn.Module):
 
         base_hw = (int(base_values.rays.shape[-2]), int(base_values.rays.shape[-1]))
 
+        target_rig_embedding = None
+        if self.target_rig_encoder is not None:
+            target_rig_embedding = self.target_rig_encoder(
+                target_rig_w2c,
+                target_rig_intrinsics,
+                image_h=int(H),
+                image_w=int(W),
+                valid_mask=target_rig_valid_mask,
+                batch_size=int(image.shape[0]),
+            ).to(device=image.device, dtype=feat_2d.dtype)
+
         decoded_features = self.feature_decoder(
             feat_2d,
             feat_3d,
             circular_horizontal=bool(is_spherical),
             target_hw=base_hw,
+            target_rig_embedding=target_rig_embedding,
         )
         feature_hw = (
             int(decoded_features.texture_features.shape[-2]),
@@ -802,6 +832,7 @@ class UnisharpFeatureModel(nn.Module):
                 "unik3d_gt_rays": gt_rays,
                 "geometry_rays": geometry_rays,
                 "initializer_geometry_rays": render_geometry_rays,
+                "target_rig_embedding": target_rig_embedding,
                 "detach_init_layer0_distance": bool(getattr(self.config, "detach_init_layer0_distance", True)),
                 "unik3d_distance": distance,
                 "distance_ray_align_factor": distance_ray_align_factor,
@@ -825,6 +856,8 @@ class UnisharpFeatureModel(nn.Module):
         params.extend([p for p in self.prediction_head.parameters() if p.requires_grad])
         params.extend([p for p in self.gaussian_composer.parameters() if p.requires_grad])
         params.extend([p for p in self.second_layer_depth_head.parameters() if p.requires_grad])
+        if self.target_rig_encoder is not None:
+            params.extend([p for p in self.target_rig_encoder.parameters() if p.requires_grad])
         
         for _, p in self.feature_extractor.named_parameters():
             if not p.requires_grad:
@@ -947,6 +980,16 @@ class UnisharpFeatureModel(nn.Module):
                 else:
                     _missing_all("second_layer_depth_head", self.second_layer_depth_head)
 
+                if self.target_rig_encoder is not None:
+                    if "target_rig_encoder" in payload and isinstance(payload["target_rig_encoder"], dict):
+                        state = self._strip_module_prefix(payload["target_rig_encoder"])
+                        _merge_incompatible(
+                            "target_rig_encoder",
+                            self.target_rig_encoder.load_state_dict(state, strict=False),
+                        )
+                    else:
+                        _missing_all("target_rig_encoder", self.target_rig_encoder)
+
                 expected_top = {
                     "step",
                     "feature_extractor",
@@ -955,6 +998,7 @@ class UnisharpFeatureModel(nn.Module):
                     "prediction_head",
                     "gaussian_composer",
                     "second_layer_depth_head",
+                    "target_rig_encoder",
                     # Released UniSHARP checkpoints retain this obsolete
                     # state block. The current feature model has no matching
                     # module, so it is deliberately ignored for compatible
@@ -1047,6 +1091,8 @@ class UnisharpFeatureModel(nn.Module):
             "use_feature_only": True,
             "unik3d_backbone": self.config.unik3d_backbone,
         }
+        if self.target_rig_encoder is not None:
+            ckpt["target_rig_encoder"] = self.target_rig_encoder.state_dict()
         if optimizer is not None:
             ckpt["optimizer"] = optimizer.state_dict()
         

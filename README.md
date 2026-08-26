@@ -331,6 +331,41 @@ with only ten steps at `384x256` and capped Gaussian counts, so it validates
 checkpoint loading, data loading, forward/backward, and checkpoint saving; it
 is not intended for a complete CPU fine-tuning run.
 
+### Target-rig-conditioned pinhole fine-tuning
+
+For a 3DGS intended to cover a known set of novel cameras, use
+`train_npu_target_rig_finetune.sh`. It encodes each calibrated target camera
+relative to the source camera and injects the pooled camera-rig embedding into
+the Gaussian decoder. The new FiLM layer is zero-initialized, so a released
+checkpoint starts with unchanged output and learns the target-view behavior
+during fine-tuning.
+
+```bash
+export INIT_CHECKPOINT="$PWD/checkpoints/released/pretained_model.pt"
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export DATA_ROOT_RE10K=/data/re10k
+export DATA_ROOT_WILDRGBD=/data/wildrgbd
+export DATA_ROOT_DL3DV=/data/dl3dv
+export DATA_ROOT_DL3DV_DEPTH=/data/dl3dv_depth
+
+TARGET_RIG_EMBED_DIM=128 \
+TARGET_RIG_TRANSLATION_SCALE=1.0 \
+bash scripts/train_npu_target_rig_finetune.sh
+```
+
+The current datasets supervise one calibrated target per source sample, while
+the model interface accepts a set of target cameras. Use this stage to adapt
+the model to the desired pose distribution first; a later multi-target data
+loader can provide several target views jointly without changing the model
+interface. The wrapper intentionally passes `--no-init-checkpoint-strict`
+because released checkpoints do not contain the newly added rig encoder.
+
+For a local CPU smoke test of the same conditioned path, use either
+`scripts/train_cpu_target_rig_finetune.sh` or, on Windows,
+`scripts/train_cpu_target_rig_finetune.ps1`. Both use calibrated RE10K pairs,
+`256x384` by default, and ten steps by default; they validate correctness and
+are not practical full CPU training launchers.
+
 ```bash
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
 export COCO_PERSON_WEIGHT=0.5

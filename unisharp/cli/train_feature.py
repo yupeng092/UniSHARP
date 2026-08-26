@@ -593,6 +593,9 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--unik3d-resolution-level", type=click.IntRange(0, 9), default=0, show_default=True)
 @click.option("--initializer-stride", type=click.IntRange(1, 2), default=1)
 @click.option("--initializer-scale-factor", type=float, default=1.5, show_default=True)
+@click.option("--target-rig-conditioning/--no-target-rig-conditioning", default=False, show_default=True, help="Condition Gaussian decoding on relative target camera rigs. Enable for target-view fine-tuning.")
+@click.option("--target-rig-embedding-dim", type=click.IntRange(16, None), default=128, show_default=True, help="Target camera set embedding dimension.")
+@click.option("--target-rig-translation-scale", type=float, default=1.0, show_default=True, help="Scene-unit translation scale before pose encoding.")
 @click.option("--lambda-aux-ray", type=float, default=3.0)
 @click.option("--lambda-aux-depth-scale", type=float, default=3.0)
 @click.option("--lambda-aux-depth2-scale", type=float, default=1.0)
@@ -718,6 +721,9 @@ def train_feature_cli(
     unik3d_resolution_level: int,
     initializer_stride: int,
     initializer_scale_factor: float,
+    target_rig_conditioning: bool,
+    target_rig_embedding_dim: int,
+    target_rig_translation_scale: float,
     lambda_aux_ray: float,
     lambda_aux_depth_scale: float,
     lambda_aux_depth2_scale: float,
@@ -780,6 +786,8 @@ def train_feature_cli(
     logging_utils.configure(log_level)
     if float(max_depth_m) <= 0.0:
         raise ValueError("--max-depth-m must be positive.")
+    if float(target_rig_translation_scale) <= 0.0:
+        raise ValueError("--target-rig-translation-scale must be positive.")
     if float(grad_clip_norm) <= 0.0:
         raise ValueError("--grad-clip-norm must be positive.")
     if float(max_step_grad_norm) < 0.0:
@@ -1414,6 +1422,9 @@ def train_feature_cli(
         initializer_scale_factor=float(initializer_scale_factor),
         detach_init_layer0_distance=bool(detach_init_layer0_distance),
         delta_rho_limit=float(delta_rho_limit),
+        target_rig_conditioning=bool(target_rig_conditioning),
+        target_rig_embedding_dim=int(target_rig_embedding_dim),
+        target_rig_translation_scale=float(target_rig_translation_scale),
     )
     setattr(config, "max_distance_m", float(max_depth_m))
     
@@ -1573,6 +1584,9 @@ def train_feature_cli(
             "unik3d_decoder_unfreeze_step": int(unik3d_decoder_unfreeze_step),
             "unik3d_encoder_unfreeze_step": int(unik3d_encoder_unfreeze_step),
             "unik3d_encoder_last_n_blocks": int(unik3d_encoder_last_n_blocks),
+            "target_rig_conditioning": bool(target_rig_conditioning),
+            "target_rig_embedding_dim": int(target_rig_embedding_dim),
+            "target_rig_translation_scale": float(target_rig_translation_scale),
             "unik3d_encoder_full_unfreeze_step": int(unik3d_encoder_full_unfreeze_step),
             "init_checkpoint": None if init_checkpoint is None else str(init_checkpoint),
             "init_checkpoint_strict": bool(init_checkpoint_strict),
