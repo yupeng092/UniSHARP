@@ -955,6 +955,11 @@ class UnisharpFeatureModel(nn.Module):
                     "prediction_head",
                     "gaussian_composer",
                     "second_layer_depth_head",
+                    # Released UniSHARP checkpoints retain this obsolete
+                    # state block. The current feature model has no matching
+                    # module, so it is deliberately ignored for compatible
+                    # official-checkpoint fine-tuning.
+                    "depth_alignment",
                     "config",
                     "decoder_params",
                     "optimizer",

@@ -294,6 +294,38 @@ bash scripts/train_npu_portrait_portable.sh
 Set `UNIK3D_PROGRESSIVE_UNFREEZE=0` only when you intentionally want the
 legacy behavior that fine-tunes all UniK3D parameters from the first step.
 
+### Fine-tune the released UniSHARP checkpoint on NPU
+
+`train_npu_portrait_finetune.sh` initializes the complete UniSHARP model from
+the released `pretained_model.pt`, then starts with a fresh optimizer and low
+fine-tuning learning rates. The released checkpoint is a UniK3D **ViT-L**
+model, so this path intentionally requires `UNIK3D_BACKBONE=vitl`; it cannot
+be mixed with a ViT-S or ViT-B architecture.
+
+For example, fine-tune on the locally prepared COCO-Person and
+OpenImages-Person subsets:
+
+```bash
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export LOCAL_IMAGES_WEIGHT=0
+export OPENIMAGES_PERSON_WEIGHT=1.0
+export FINETUNE_CHECKPOINT="$PWD/checkpoints/released/pretained_model.pt"
+
+bash scripts/train_npu_portrait_finetune.sh \
+  --coco-person-manifest "$DATASET_MANIFEST_DIR/coco_person_train2017_boxes.jsonl" \
+  --dataset-weight-coco-person 0.5
+```
+
+The wrapper uses the NPU portable renderer, not CUDA `gsplat`. It freezes
+UniK3D initially, unfreezes its decoder at step 5000, and the final four
+encoder blocks at step 15000. Use the multi-card version with `NPU_IDS`:
+
+```bash
+NPU_IDS=0,1,2,3 bash scripts/train_npu_portrait_finetune_ddp.sh \
+  --coco-person-manifest "$DATASET_MANIFEST_DIR/coco_person_train2017_boxes.jsonl" \
+  --dataset-weight-coco-person 0.5
+```
+
 Use `scripts/prepare_local_images.py` and
 `scripts/prepare_calibrated_colmap.py` directly when you prefer explicit
 manifest paths. Local image-only training uses an identity target camera, so

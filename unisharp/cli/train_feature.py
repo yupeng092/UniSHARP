@@ -539,6 +539,18 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--dataset-manifest-dir", type=click.Path(path_type=Path, file_okay=False), default=None)
 @click.option("--out-root", type=click.Path(path_type=Path, file_okay=False), required=True)
 @click.option("--run-name", type=str, default=None)
+@click.option(
+    "--init-checkpoint",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    default=None,
+    help="Initialize model weights from a UniSHARP checkpoint. Optimizer state and checkpoint step are not restored.",
+)
+@click.option(
+    "--init-checkpoint-strict/--no-init-checkpoint-strict",
+    default=True,
+    show_default=True,
+    help="Reject mismatches in every checkpoint component supported by the selected UniSHARP architecture.",
+)
 @click.option("--steps", type=int, default=1000000)
 @click.option("--batch-size", type=int, default=2)
 @click.option("--num-workers", type=int, default=1)
@@ -662,6 +674,8 @@ def train_feature_cli(
     dataset_manifest_dir: Path | None,
     out_root: Path,
     run_name: str | None,
+    init_checkpoint: Path | None,
+    init_checkpoint_strict: bool,
     steps: int,
     batch_size: int,
     num_workers: int,
@@ -917,8 +931,9 @@ def train_feature_cli(
     if is_main:
         out_dir.mkdir(parents=True, exist_ok=True)
         LOGGER.info(
-            "Training start: out=%s branch=gt-override scratch_unik3d_pretrained backbone=%s steps=%d batch=%d",
+            "Training start: out=%s init=%s backbone=%s steps=%d batch=%d",
             str(out_dir),
+            str(init_checkpoint) if init_checkpoint is not None else "scratch_heads+unik3d_pretrained",
             str(unik3d_backbone),
             int(steps),
             int(batch_size),
@@ -1403,6 +1418,23 @@ def train_feature_cli(
     setattr(config, "max_distance_m", float(max_depth_m))
     
     model = UnisharpFeatureModel(config).to(dev).train()
+    if init_checkpoint is not None:
+        missing_keys, unexpected_keys = model.load_from_checkpoint(
+            str(init_checkpoint), strict=bool(init_checkpoint_strict)
+        )
+        if is_main:
+            LOGGER.info(
+                "Initialized UniSHARP model from checkpoint: %s | strict=%s | missing=%d unexpected=%d",
+                str(init_checkpoint),
+                bool(init_checkpoint_strict),
+                len(missing_keys),
+                len(unexpected_keys),
+            )
+            if missing_keys or unexpected_keys:
+                LOGGER.warning(
+                    "Non-strict checkpoint load details | missing=%s | unexpected=%s",
+                    missing_keys[:20], unexpected_keys[:20],
+                )
 
     if _ddp_is_enabled():
         model = DDP(
@@ -1542,6 +1574,8 @@ def train_feature_cli(
             "unik3d_encoder_unfreeze_step": int(unik3d_encoder_unfreeze_step),
             "unik3d_encoder_last_n_blocks": int(unik3d_encoder_last_n_blocks),
             "unik3d_encoder_full_unfreeze_step": int(unik3d_encoder_full_unfreeze_step),
+            "init_checkpoint": None if init_checkpoint is None else str(init_checkpoint),
+            "init_checkpoint_strict": bool(init_checkpoint_strict),
         }
         (out_dir / "config.json").write_text(
             json.dumps(config_dict, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
