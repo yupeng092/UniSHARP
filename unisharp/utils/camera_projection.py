@@ -5,6 +5,7 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from unisharp.utils.pixel_convention import integer_pixel_center_grid
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 from .pano import get_cubemap_extrinsics_4x4, get_pinhole_intrinsics_4x4
 
@@ -77,7 +78,7 @@ def view_frustum_mask_cubemap_union(
 
         extr_faces_novel = cubemap_face_cameras(extr_novel_w2c, device=device)
         extr_faces_src = cubemap_face_cameras(extr_source_w2c, device=device)
-        cam2world_novel = torch.linalg.inv(extr_faces_novel)
+        cam2world_novel = invert_rigid_transform(extr_faces_novel)
 
         depth = depth_novel[..., 0].to(torch.float32)
         depth_valid = torch.isfinite(depth) & (depth > 0.0)
@@ -176,4 +177,3 @@ def view_frustum_mask_cubemap_union(
                 inside = inside & source_visible
             mask_any |= inside
         return mask_any
-

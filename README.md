@@ -326,6 +326,27 @@ NPU_IDS=0,1,2,3 bash scripts/train_npu_portrait_finetune_ddp.sh \
   --dataset-weight-coco-person 0.5
 ```
 
+For a local correctness check before uploading, use the CPU wrapper. It starts
+with only ten steps at `384x256` and capped Gaussian counts, so it validates
+checkpoint loading, data loading, forward/backward, and checkpoint saving; it
+is not intended for a complete CPU fine-tuning run.
+
+```bash
+export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
+export COCO_PERSON_WEIGHT=0.5
+export OPENIMAGES_PERSON_WEIGHT=1.0
+bash scripts/train_cpu_portrait_finetune.sh
+```
+
+On Windows, run the matching PowerShell wrapper directly:
+
+```powershell
+.\scripts\train_cpu_portrait_finetune.ps1 `
+  -DatasetManifestDir "$PWD\dataset_manifests" `
+  -CocoPersonWeight 0.5 `
+  -OpenImagesPersonWeight 1.0
+```
+
 Use `scripts/prepare_local_images.py` and
 `scripts/prepare_calibrated_colmap.py` directly when you prefer explicit
 manifest paths. Local image-only training uses an identity target camera, so

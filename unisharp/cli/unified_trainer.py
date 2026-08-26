@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from unisharp.utils.gsplat import GSplatRenderer
 from unisharp.losses import UnisharpLoss
 from unisharp.utils.camera_utils import (
     transform_gaussians_to_world,
@@ -20,9 +19,13 @@ from unisharp.utils.fisheye_geer import (
     render_gaussians_fisheye624,
 )
 from unisharp.utils.camera_projection import cubemap_face_cameras, build_extrinsics_w2c, view_frustum_mask_cubemap_union
+from unisharp.utils.rigid_transform import invert_rigid_transform
 from unisharp.utils.pano import Cube2Equirec, get_pinhole_intrinsics_4x4
 from unisharp import DEFAULT_MAX_DEPTH_M
 from unisharp.utils.pixel_convention import integer_pixel_center_grid
+
+if TYPE_CHECKING:
+    from unisharp.utils.gsplat import GSplatRenderer
 
 
 @dataclass
@@ -40,7 +43,7 @@ class UnifiedTrainer:
     def __init__(
         self,
         model: nn.Module,
-        renderer: GSplatRenderer,
+        renderer: nn.Module,
         loss_fn: UnisharpLoss,
         device: torch.device,
         enable_tgt_unik3d_vis: bool = True,
@@ -963,7 +966,7 @@ class UnifiedTrainer:
             tgt_h = int(tgt_u8.shape[-2])
             tgt_w = int(tgt_u8.shape[-1])
             ident = torch.eye(4, dtype=src_w2c.dtype, device=self.device).unsqueeze(0)
-            rel_tgt_w2c = tgt_w2c[b : b + 1] @ torch.linalg.inv(src_w2c[b : b + 1])
+            rel_tgt_w2c = tgt_w2c[b : b + 1] @ invert_rigid_transform(src_w2c[b : b + 1])
             src_k_render_b = src_render_k3[b : b + 1]
             tgt_k_render_b = tgt_render_k3[b : b + 1]
             src_out = self.renderer(
@@ -1583,8 +1586,8 @@ class UnifiedTrainer:
         )
         
         with torch.autocast("cuda", enabled=False):
-            c2w_src = torch.linalg.inv(extr_src_base.to(torch.float32))
-            c2w_tgt = torch.linalg.inv(extr_tgt_base.to(torch.float32))
+            c2w_src = invert_rigid_transform(extr_src_base.to(torch.float32))
+            c2w_tgt = invert_rigid_transform(extr_tgt_base.to(torch.float32))
             
             flip_mask = torch.tensor(flip_yz_per_sample, device=c2w_src.device, dtype=torch.bool)
             negate_relative_z = False
@@ -1607,15 +1610,15 @@ class UnifiedTrainer:
                 c2w_src[flip_mask] = c2w_src[flip_mask] @ D
                 c2w_tgt[flip_mask] = c2w_tgt[flip_mask] @ D
             
-            ref_inv = torch.linalg.inv(c2w_src.to(torch.float32))
+            ref_inv = invert_rigid_transform(c2w_src.to(torch.float32))
             c2w_src = ref_inv @ c2w_src
             c2w_tgt = ref_inv @ c2w_tgt
             if negate_relative_z:
                 c2w_tgt = c2w_tgt.clone()
                 c2w_tgt[flip_mask, 2, 3] *= -1.0
             
-            extr_src = torch.linalg.inv(c2w_src).to(dtype=extr_src_base.dtype)
-            extr_tgt = torch.linalg.inv(c2w_tgt).to(dtype=extr_tgt_base.dtype)
+            extr_src = invert_rigid_transform(c2w_src).to(dtype=extr_src_base.dtype)
+            extr_tgt = invert_rigid_transform(c2w_tgt).to(dtype=extr_tgt_base.dtype)
         
         src_erp = (src_erp_u8.float() / 255.0).clamp(0, 1)
         distance_init_cap_m = self._distance_init_cap_for_dataset(dataset_name)

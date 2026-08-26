@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from unisharp.utils.rigid_transform import invert_rigid_transform
+
 from unisharp.utils.pixel_convention import integer_pixel_center_grid
 
 
@@ -149,7 +151,11 @@ def compute_fisheye624_frustum_mask(
     valid = torch.isfinite(depth[:, 0]) & (depth[:, 0] > 0.0)
     xyz_tgt = rays * depth
     xyz_tgt_h = torch.cat([xyz_tgt, torch.ones_like(depth)], dim=1)
-    xyz_world = torch.einsum("bij,bjhw->bihw", torch.linalg.inv(tgt_w2c.to(dtype=dtype)), xyz_tgt_h)
+    xyz_world = torch.einsum(
+        "bij,bjhw->bihw",
+        invert_rigid_transform(tgt_w2c.to(dtype=dtype)),
+        xyz_tgt_h,
+    )
     xyz_src = torch.einsum("bij,bjhw->bihw", src_w2c.to(dtype=dtype), xyz_world)[:, :3]
 
     Fisheye624 = _load_fisheye624_class()
@@ -262,7 +268,10 @@ def render_gaussians_fisheye624(
         opacities = opacities.unsqueeze(-1)
 
     viewmatrix = extrinsics_w2c[0].to(device=dev, dtype=dtype).transpose(0, 1).contiguous()
-    campos = torch.linalg.inv(viewmatrix)[3, :3].contiguous()
+    # ``viewmatrix`` is the transposed w2c matrix expected by the rasterizer.
+    # Its inverse's final row equals the c2w translation, obtained without a
+    # generic matrix inverse from the original rigid w2c transform.
+    campos = invert_rigid_transform(extrinsics_w2c[0].to(device=dev, dtype=dtype))[:3, 3].contiguous()
     params = camera_params[0].to(device=dev, dtype=dtype) if camera_params.ndim == 2 else camera_params.to(device=dev, dtype=dtype)
     rays, tan_theta, tan_phi = build_fisheye624_tangent_arrays(
         params.unsqueeze(0),

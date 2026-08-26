@@ -6,6 +6,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from unisharp.utils.rigid_transform import invert_rigid_transform
+
 
 def reproject_pinhole_z_depth_same_pose(
     z_depth: torch.Tensor | None,
@@ -131,7 +133,7 @@ def transform_gaussians_to_world(
     gaussians: Any,
     src_w2c: torch.Tensor,
 ) -> Any:
-    c2w = torch.linalg.inv(src_w2c).to(torch.float32)
+    c2w = invert_rigid_transform(src_w2c).to(torch.float32)
     r = c2w[:3, :3]
     t = c2w[:3, 3]
     
@@ -247,7 +249,7 @@ def compute_frustum_mask(
     pts_tgt_cam = torch.stack([x_cam, y_cam, z, torch.ones_like(z)], dim=0)
     pts_tgt_cam = pts_tgt_cam.reshape(4, -1)
     
-    tgt_c2w = torch.linalg.inv(tgt_w2c[0]).to(torch.float32)
+    tgt_c2w = invert_rigid_transform(tgt_w2c[0]).to(torch.float32)
     pts_world = tgt_c2w @ pts_tgt_cam
     
     pts_src_cam = src_w2c[0].to(torch.float32) @ pts_world
