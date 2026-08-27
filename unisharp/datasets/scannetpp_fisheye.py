@@ -13,6 +13,7 @@ from PIL import Image
 from torch.utils.data import IterableDataset
 
 from unisharp import DEFAULT_MAX_DEPTH_M
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 LOGGER = logging.getLogger(__name__)
@@ -361,10 +362,10 @@ class ScannetppFisheyeDataset(IterableDataset):
             w2c = w2c_by_name.get(image_name)
             if w2c is None and frame.get("transform_matrix") is not None:
                 c2w = torch.tensor(frame["transform_matrix"], dtype=torch.float32)
-                w2c = torch.linalg.inv(c2w)
+                w2c = invert_rigid_transform(c2w)
             if w2c is None:
                 continue
-            center = torch.linalg.inv(w2c)[:3, 3]
+            center = invert_rigid_transform(w2c)[:3, 3]
             frames.append(
                 {
                     "image_name": image_name,

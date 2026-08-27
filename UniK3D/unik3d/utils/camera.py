@@ -272,7 +272,9 @@ class Pinhole(Camera):
         uv_homogeneous = torch.cat(
             [uv_flat, torch.ones(b, 1, h * w, device=uv.device)], dim=1
         )  # [B, 3, H*W]
-        K_inv = torch.inverse(self.K.float())
+        # Pinhole intrinsics have a known triangular structure.  Avoid the
+        # generic inverse, which may dispatch to linalg_inv_ex on Ascend.
+        K_inv = invert_pinhole(self.K.float())
         xyz = K_inv @ uv_homogeneous
         xyz = xyz / xyz[:, -1:].clip(min=1e-4)
         xyz = xyz.reshape(b, 3, h, w)

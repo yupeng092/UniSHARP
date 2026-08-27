@@ -12,6 +12,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from unisharp import DEFAULT_MAX_DEPTH_M
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 MAX_DEPTH_M = DEFAULT_MAX_DEPTH_M
@@ -316,17 +317,17 @@ class PanOGSDataset(Dataset[PanOGSSample]):
             extr_tgt = build_extrinsics_w2c(tgt_R, tgt_t, pose_conv)
 
             with torch.autocast(device_type="cpu", enabled=False):
-                c2w_src = torch.linalg.inv(extr_src)
-                c2w_tgt = torch.linalg.inv(extr_tgt)
+                c2w_src = invert_rigid_transform(extr_src)
+                c2w_tgt = invert_rigid_transform(extr_tgt)
                 if bool(flip_yz):
                     D = torch.diag(torch.tensor([1.0, -1.0, -1.0, 1.0], dtype=torch.float32, device=device))
                     c2w_src = c2w_src @ D
                     c2w_tgt = c2w_tgt @ D
-                ref_inv = torch.linalg.inv(c2w_src)
+                ref_inv = invert_rigid_transform(c2w_src)
                 c2w_src = ref_inv @ c2w_src
                 c2w_tgt = ref_inv @ c2w_tgt
-                extr_src_n = torch.linalg.inv(c2w_src)
-                extr_tgt_n = torch.linalg.inv(c2w_tgt)
+                extr_src_n = invert_rigid_transform(c2w_src)
+                extr_tgt_n = invert_rigid_transform(c2w_tgt)
 
             m_tgt_in_src = view_frustum_mask_cubemap_union(
                 depth_novel=tgt_d,
@@ -552,4 +553,3 @@ def panogs_collate(batch: list[PanOGSSample]) -> PanOGSSample:
         tgt_idx=[b.tgt_idx for b in batch],  # type: ignore[arg-type]
         scene=[b.scene for b in batch],  # type: ignore[arg-type]
     )
-

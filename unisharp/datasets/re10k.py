@@ -23,6 +23,7 @@ from unisharp.datasets.pair_sampling import (
 from unisharp import DEFAULT_MAX_DEPTH_M
 from unisharp.utils.pixel_convention import normalized_intrinsics_to_integer_pixel_k
 from unisharp.utils.unik3d_adapter import infer_unik3d_pinhole, load_unik3d_model
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 LOGGER = logging.getLogger(__name__)
@@ -525,7 +526,7 @@ class Re10KDataset(IterableDataset):
     ) -> list[int]:
         if num_frames < 2:
             return []
-        centers = torch.linalg.inv(w2c_all)[:, :3, 3].to(torch.float32)
+        centers = invert_rigid_transform(w2c_all)[:, :3, 3].to(torch.float32)
         sample_h = int(self.pair_overlap_sample_h)
         sample_w = int(self.pair_overlap_sample_w)
         return select_targets_for_source(
@@ -715,4 +716,3 @@ class Re10KDataset(IterableDataset):
 
 def re10k_collate(batch: list[Re10KPairSample]) -> Re10KPairSample:
     return _pack_re10k_batch(batch)
-

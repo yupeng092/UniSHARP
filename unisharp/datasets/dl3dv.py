@@ -20,6 +20,7 @@ from unisharp.datasets.pair_sampling import (
 )
 from unisharp.datasets.re10k import Re10KPairSample, re10k_collate
 from unisharp import DEFAULT_MAX_DEPTH_M
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 class DL3DVDataset(IterableDataset):
@@ -174,7 +175,7 @@ class DL3DVDataset(IterableDataset):
                 sx = float(cur_w) / float(orig_w)
                 sy = float(cur_h) / float(orig_h)
                 k_cur = resize_k3_align_corners_false(k_cur, sx=sx, sy=sy)
-            w2c_map[frame_id] = torch.linalg.inv(c2w)
+            w2c_map[frame_id] = invert_rigid_transform(c2w)
             intr_map[frame_id] = k_cur
             valid_ids.append(frame_id)
         valid_ids = sorted(valid_ids)
@@ -204,7 +205,7 @@ class DL3DVDataset(IterableDataset):
             scene_rng = random.Random(self.seed + self.epoch * 1000003 + scene_order_idx)
             if self.shuffle_frame:
                 scene_rng.shuffle(src_order)
-            centers = torch.stack([torch.linalg.inv(w2c_map[i])[:3, 3] for i in valid_ids], dim=0)
+            centers = torch.stack([invert_rigid_transform(w2c_map[i])[:3, 3] for i in valid_ids], dim=0)
             frame_to_pos = {fid: pos for pos, fid in enumerate(valid_ids)}
 
             def overlap_avg(src_pos: int, tgt_pos: int) -> float:

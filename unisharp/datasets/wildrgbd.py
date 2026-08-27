@@ -13,6 +13,7 @@ from torch.utils.data import IterableDataset
 
 from unisharp.datasets.pair_sampling import project_overlap_ratio, resize_k3_align_corners_false, resize_rgb_u8_chw_high_quality
 from unisharp import DEFAULT_MAX_DEPTH_M
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,7 @@ class WildRGBDDataset(IterableDataset):
         rng: random.Random,
     ) -> int | None:
         src_w2c = torch.from_numpy(w2c_map[int(src_idx)]).to(torch.float32)
-        src_center = torch.linalg.inv(src_w2c)[:3, 3]
+        src_center = invert_rigid_transform(src_w2c)[:3, 3]
         candidates: list[int] = []
         for j in valid_ids:
             if int(j) == int(src_idx):
@@ -188,7 +189,7 @@ class WildRGBDDataset(IterableDataset):
             if gap < self.min_frame_gap or gap > self.max_frame_gap:
                 continue
             jw2c = torch.from_numpy(w2c_map[int(j)]).to(torch.float32)
-            jcenter = torch.linalg.inv(jw2c)[:3, 3]
+            jcenter = invert_rigid_transform(jw2c)[:3, 3]
             trans = torch.norm(jcenter - src_center, p=2).item()
             if trans > self.pair_max_translation_m:
                 continue
@@ -349,4 +350,3 @@ def wildrgbd_collate(batch: list[WildRGBDPairSample]) -> WildRGBDPairSample:
         tgt_idx=[b.tgt_idx for b in batch],  # type: ignore[arg-type]
         scene=[b.scene for b in batch],  # type: ignore[arg-type]
     )
-

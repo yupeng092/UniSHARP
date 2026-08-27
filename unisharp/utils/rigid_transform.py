@@ -28,3 +28,32 @@ def invert_rigid_transform(transform: torch.Tensor) -> torch.Tensor:
     inverse[..., :3, 3:4] = translation_inv
     inverse[..., 3, 3] = 1.0
     return inverse
+
+
+def invert_pinhole_intrinsics(intrinsics: torch.Tensor) -> torch.Tensor:
+    """Invert a homogeneous pinhole intrinsic matrix analytically.
+
+    The supported matrix form is ``[[fx, 0, cx, 0], [0, fy, cy, 0],
+    [0, 0, 1, 0], [0, 0, 0, 1]]``.  It is intentionally separate from
+    :func:`invert_rigid_transform`: camera intrinsics are not rigid poses.
+    This avoids the NPU ``linalg_inv_ex`` path while retaining the exact
+    inverse of the pinhole calibration matrix.
+    """
+    if intrinsics.ndim < 2 or tuple(intrinsics.shape[-2:]) != (4, 4):
+        raise ValueError(f"Expected intrinsic shape (..., 4, 4), got {tuple(intrinsics.shape)}")
+
+    fx = intrinsics[..., 0, 0]
+    fy = intrinsics[..., 1, 1]
+    cx = intrinsics[..., 0, 2]
+    cy = intrinsics[..., 1, 2]
+    if bool(torch.any(fx == 0)) or bool(torch.any(fy == 0)):
+        raise ValueError("Cannot invert pinhole intrinsics with zero focal length.")
+
+    inverse = torch.zeros_like(intrinsics)
+    inverse[..., 0, 0] = fx.reciprocal()
+    inverse[..., 1, 1] = fy.reciprocal()
+    inverse[..., 0, 2] = -cx / fx
+    inverse[..., 1, 2] = -cy / fy
+    inverse[..., 2, 2] = 1.0
+    inverse[..., 3, 3] = 1.0
+    return inverse

@@ -260,9 +260,16 @@ def _rotmat_to_quat_wxyz(rot: torch.Tensor) -> torch.Tensor:
     m21 = rot[:, 2, 1]
     m22 = rot[:, 2, 2]
     qw = 0.5 * torch.sqrt((1.0 + m00 + m11 + m22).clamp(min=1e-8))
-    qx = torch.copysign(0.5 * torch.sqrt((1.0 + m00 - m11 - m22).clamp(min=1e-8)), m21 - m12)
-    qy = torch.copysign(0.5 * torch.sqrt((1.0 - m00 + m11 - m22).clamp(min=1e-8)), m02 - m20)
-    qz = torch.copysign(0.5 * torch.sqrt((1.0 - m00 - m11 + m22).clamp(min=1e-8)), m10 - m01)
+    # ``torch.copysign`` is missing on several torch_npu/CANN combinations
+    # and falls back to CPU.  This has the same sign convention (including
+    # zero: positive magnitude) using ordinary device-native tensor ops.
+    def signed_sqrt(value: torch.Tensor, sign_source: torch.Tensor) -> torch.Tensor:
+        magnitude = 0.5 * torch.sqrt(value.clamp(min=1e-8))
+        return torch.where(sign_source < 0.0, -magnitude, magnitude)
+
+    qx = signed_sqrt(1.0 + m00 - m11 - m22, m21 - m12)
+    qy = signed_sqrt(1.0 - m00 + m11 - m22, m02 - m20)
+    qz = signed_sqrt(1.0 - m00 - m11 + m22, m10 - m01)
     quat = torch.stack([qw, qx, qy, qz], dim=1)
     return quat / quat.norm(dim=1, keepdim=True).clamp(min=1e-8)
 
@@ -449,4 +456,3 @@ class PanoInitializer(nn.Module):
             global_scale=global_scale,
             grid_cell_size=0.5 * (angular_cell[:, 0:1] + angular_cell[:, 1:2]),
         )
-

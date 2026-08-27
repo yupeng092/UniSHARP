@@ -380,9 +380,16 @@ def remove_padding_metas(out, image_metas):
 def ssi_helper(tensor1, tensor2):
     stability_mat = 1e-4 * torch.eye(2, device=tensor1.device)
     tensor2_one = torch.stack([tensor2, torch.ones_like(tensor2)], dim=1)
-    scale_shift = torch.inverse(tensor2_one.T @ tensor2_one + stability_mat) @ (
-        tensor2_one.T @ tensor1.unsqueeze(1)
-    )
+    normal_matrix = tensor2_one.T @ tensor2_one + stability_mat
+    rhs = tensor2_one.T @ tensor1.unsqueeze(1)
+    # This is a 2x2 normal equation.  Write its inverse analytically instead
+    # of calling torch.inverse(), which maps to linalg_inv_ex on some NPUs.
+    a, b = normal_matrix[0, 0], normal_matrix[0, 1]
+    c, d = normal_matrix[1, 0], normal_matrix[1, 1]
+    determinant = (a * d - b * c).clamp_min(torch.finfo(normal_matrix.dtype).eps)
+    scale_shift = torch.stack(
+        [d * rhs[0, 0] - b * rhs[1, 0], -c * rhs[0, 0] + a * rhs[1, 0]], dim=0
+    ).unsqueeze(1) / determinant
     scale, shift = scale_shift.squeeze().chunk(2, dim=0)
     return scale, shift
 

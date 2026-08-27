@@ -15,9 +15,17 @@ Each metadata frame must contain pixel intrinsics (``fxfycxcy`` or ``fx``,
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import torch
+
+# Keep this preparation script directly executable via
+# ``python scripts/prepare_re10k_chunks.py``.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
@@ -78,8 +86,8 @@ def _w2c(frame: dict[str, Any]) -> torch.Tensor | None:
             continue
         matrix = matrix.reshape(4, 4)
         try:
-            return torch.linalg.inv(matrix) if invert else matrix
-        except RuntimeError:
+            return invert_rigid_transform(matrix) if invert else matrix
+        except (RuntimeError, ValueError):
             continue
     return None
 

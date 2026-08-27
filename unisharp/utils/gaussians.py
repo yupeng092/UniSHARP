@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from unisharp.utils import color_space as cs_utils
 from unisharp.utils import linalg
+from unisharp.utils.rigid_transform import invert_pinhole_intrinsics, invert_rigid_transform
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +63,20 @@ def get_unprojection_matrix(
         ],
         device=device,
     )
-    return torch.linalg.inv(ndc_matrix @ intrinsics @ extrinsics)
+    # The composite projection is not rigid, so treating it as a pose and
+    # transposing it would be mathematically wrong.  Invert each known factor
+    # analytically: (N K E)^-1 = E^-1 K^-1 N^-1.
+    ndc_inverse = torch.tensor(
+        [
+            [image_width * 0.5, 0.0, image_width * 0.5, 0.0],
+            [0.0, image_height * 0.5, image_height * 0.5, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        device=device,
+        dtype=intrinsics.dtype,
+    )
+    return invert_rigid_transform(extrinsics) @ invert_pinhole_intrinsics(intrinsics) @ ndc_inverse
 
 
 def unproject_gaussians(

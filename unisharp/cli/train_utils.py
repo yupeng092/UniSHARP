@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from unisharp.utils.rigid_transform import invert_rigid_transform
+
 
 def quat_mul_wxyz(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
     w1, x1, y1, z1 = q1.unbind(dim=-1)
@@ -100,7 +102,7 @@ def compute_frustum_mask(
     Z_t = d
     pts_t = torch.stack([X_t, Y_t, Z_t], dim=-1).reshape(-1, 3)
 
-    c2w_t = torch.linalg.inv(tgt_w2c[0].to(f32))
+    c2w_t = invert_rigid_transform(tgt_w2c[0].to(f32))
     pts_w = pts_t @ c2w_t[:3, :3].T + c2w_t[:3, 3][None, :]
 
     w2c_s = src_w2c[0].to(f32)

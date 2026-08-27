@@ -12,6 +12,8 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from unisharp.utils.rigid_transform import invert_rigid_transform
+
 LOGGER = logging.getLogger(__name__)
 METRIC_MASK_CACHE_VERSION = "v3_source_bounds"
 
@@ -297,7 +299,7 @@ def compute_source_frustum_mask(
     y_cam = (y_coords - cy_t) * z / fy_t
     pts_tgt = torch.stack([x_cam, y_cam, z, torch.ones_like(z)], dim=0).reshape(4, -1)
 
-    tgt_c2w = torch.linalg.inv(tgt_w2c[0].to(device=device, dtype=dtype))
+    tgt_c2w = invert_rigid_transform(tgt_w2c[0].to(device=device, dtype=dtype))
     pts_world = tgt_c2w @ pts_tgt
     pts_src = src_w2c[0].to(device=device, dtype=dtype) @ pts_world
 
@@ -425,4 +427,3 @@ def metric_mask_from_pinhole_batch(
     if not masks:
         return None
     return torch.cat(masks, dim=0).to(device=device, dtype=torch.float32)
-

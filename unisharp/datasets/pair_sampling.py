@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from unisharp.utils.pixel_convention import scale_intrinsics_align_corners_false
+from unisharp.utils.rigid_transform import invert_rigid_transform
 
 
 def resize_k3_align_corners_false(k: torch.Tensor, *, sx: float, sy: float) -> torch.Tensor:
@@ -60,7 +61,7 @@ def project_overlap_ratio(
     rays = rays / torch.norm(rays, dim=-1, keepdim=True).clamp(min=1e-6)
     pts_src = rays * float(proxy_depth)
 
-    src_c2w = torch.linalg.inv(src_w2c)
+    src_c2w = invert_rigid_transform(src_w2c)
     pts_src_h = torch.cat([pts_src, torch.ones_like(pts_src[:, :1])], dim=-1)
     pts_w = (src_c2w @ pts_src_h.T).T
     pts_tgt = (tgt_w2c @ pts_w.T).T

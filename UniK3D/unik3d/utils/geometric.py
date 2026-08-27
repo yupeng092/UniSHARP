@@ -4,6 +4,21 @@ import torch
 from torch.nn import functional as F
 
 
+def _invert_pinhole_intrinsics(camera_intrinsics: torch.Tensor) -> torch.Tensor:
+    """Analytic inverse for batched 3x3 pinhole calibration matrices."""
+    fx = camera_intrinsics[..., 0, 0]
+    fy = camera_intrinsics[..., 1, 1]
+    cx = camera_intrinsics[..., 0, 2]
+    cy = camera_intrinsics[..., 1, 2]
+    inverse = torch.zeros_like(camera_intrinsics)
+    inverse[..., 0, 0] = fx.reciprocal()
+    inverse[..., 1, 1] = fy.reciprocal()
+    inverse[..., 0, 2] = -cx / fx
+    inverse[..., 1, 2] = -cy / fy
+    inverse[..., 2, 2] = 1.0
+    return inverse
+
+
 # @torch.autocast(device_type="cuda", enabled=False, dtype=torch.float32)
 def generate_rays(
     camera_intrinsics: torch.Tensor, image_shape: Tuple[int, int], noisy: bool = False
@@ -27,7 +42,7 @@ def generate_rays(
     pixel_coords = pixel_coords + 0.5
 
     # Calculate ray directions
-    intrinsics_inv = torch.inverse(camera_intrinsics.float()).to(dtype)
+    intrinsics_inv = _invert_pinhole_intrinsics(camera_intrinsics.float()).to(dtype)
     homogeneous_coords = torch.cat(
         [pixel_coords, torch.ones_like(pixel_coords[:, :, :1])], dim=2
     )  # (H, W, 3)

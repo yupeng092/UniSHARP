@@ -33,6 +33,7 @@ from unisharp.models.unisharp_feature import UnisharpFeatureConfig, UnisharpFeat
 from unisharp.utils.color_space import linearRGB2sRGB  # noqa: E402
 from unisharp import DEFAULT_MAX_DEPTH_M  # noqa: E402
 from unisharp.utils.io import save_image  # noqa: E402
+from unisharp.utils.rigid_transform import invert_rigid_transform  # noqa: E402
 from unisharp.utils.metrics import (  # noqa: E402
     MetricsCalculator,
     compute_masked_rgb_metrics,
@@ -1431,7 +1432,7 @@ def _load_smx_sim_fisheye_scene(scene_dir: Path) -> tuple[dict[str, Any], list[d
                 "image_name": image_path.name,
                 "image_path": image_path,
                 "source_image": source_image,
-                "w2c": torch.linalg.inv(c2w),
+                "w2c": invert_rigid_transform(c2w),
                 "idx": int(frame.get("source_image_index", local_idx)),
                 "pos": int(local_idx),
                 "yaw_pitch_roll_deg": list(frame.get("yaw_pitch_roll_deg", [0.0, 0.0, 0.0])),
@@ -1612,7 +1613,7 @@ def _smx_frame_position_from_w2c(frame: dict[str, Any], meta: dict[str, Any]) ->
         w2c_t = w2c.detach().clone().to(torch.float32)
     else:
         w2c_t = torch.as_tensor(w2c, dtype=torch.float32)
-    raw_xyz = torch.linalg.inv(w2c_t)[:3, 3].clone()
+    raw_xyz = invert_rigid_transform(w2c_t)[:3, 3].clone()
     raw_scale = float(meta.get("position_scale", 1.0))
     if abs(raw_scale) > 1e-8:
         raw_xyz = raw_xyz / raw_scale
@@ -1846,7 +1847,7 @@ def _load_dl3dv_scene(scene_dir: Path) -> tuple[dict[int, Path], dict[int, torch
         if frame_id not in image_paths:
             continue
         c2w = _nerf_c2w_to_opencv_c2w(frame["transform_matrix"])
-        w2c_map[frame_id] = torch.linalg.inv(c2w)
+        w2c_map[frame_id] = invert_rigid_transform(c2w)
         intr_map[frame_id] = k_cur.clone()
     return image_paths, w2c_map, intr_map
 
