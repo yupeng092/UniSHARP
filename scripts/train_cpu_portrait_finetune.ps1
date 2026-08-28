@@ -82,7 +82,9 @@ $trainArgs = @(
     "--out-root", $OutRoot, "--run-name", $RunName,
     "--steps", "$Steps", "--batch-size", "1", "--num-workers", "$NumWorkers",
     "--pinhole-train-height", "$Height", "--pinhole-train-width", "$Width", "--train-resize-multiple", "0",
-    "--unik3d-backbone", "vitl", "--initializer-stride", "2",
+    # Match the released UniSHARP checkpoint's Gaussian grid density.  A
+    # stride of 2 would reduce the same-resolution output to one quarter.
+    "--unik3d-backbone", "vitl", "--initializer-stride", "1",
     "--init-checkpoint", $FineTuneCheckpoint, "--init-checkpoint-strict",
     "--unik3d-progressive-unfreeze", "--unik3d-decoder-unfreeze-step", "5",
     "--unik3d-encoder-unfreeze-step", "15", "--unik3d-encoder-last-n-blocks", "4",

@@ -23,6 +23,9 @@ OUT_ROOT="${OUT_ROOT:-${REPO_ROOT}/outputs_npu}"
 RUN_NAME="${RUN_NAME:-unisharp_portrait_npu_ddp_$(date +%Y%m%d_%H%M%S)}"
 STEPS="${STEPS:-100000}"; BATCH_SIZE="${BATCH_SIZE:-1}"; NUM_WORKERS="${NUM_WORKERS:-2}"
 UNIK3D_BACKBONE="${UNIK3D_BACKBONE:-vits}"
+# Fresh lightweight training may use stride=2 to control cost.  Official
+# checkpoint fine-tuning sets this to 1 in its wrapper to preserve its grid.
+INITIALIZER_STRIDE="${INITIALIZER_STRIDE:-2}"
 PINHOLE_TRAIN_HEIGHT="${PINHOLE_TRAIN_HEIGHT:-1024}"; PINHOLE_TRAIN_WIDTH="${PINHOLE_TRAIN_WIDTH:-1536}"
 UNIK3D_PROGRESSIVE_UNFREEZE="${UNIK3D_PROGRESSIVE_UNFREEZE:-1}"
 UNIK3D_DECODER_UNFREEZE_STEP="${UNIK3D_DECODER_UNFREEZE_STEP:-20000}"
@@ -93,7 +96,7 @@ python "${SCRIPT_DIR}/check_npu_env.py"
 exec torchrun --standalone --nproc_per_node="${WORLD_SIZE}" --master_port="${MASTER_PORT}" -m unisharp.cli train-feature \
   --device npu --renderer-backend portable --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" --steps "${STEPS}" \
   --batch-size "${BATCH_SIZE}" --num-workers "${NUM_WORKERS}" --pinhole-train-height "${PINHOLE_TRAIN_HEIGHT}" --pinhole-train-width "${PINHOLE_TRAIN_WIDTH}" --train-resize-multiple 0 \
-  --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride 2 \
+  --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride "${INITIALIZER_STRIDE}" \
   "${UNIK3D_UNFREEZE_ARGS[@]}" \
   --dataset-weight-re10k 0 --dataset-weight-hm3d 0 --dataset-weight-sim 0 --dataset-weight-wildrgbd 0 --dataset-weight-dl3dv 0 --dataset-weight-scanetpp 0 \
   --lambda-percep 0 --vis-every 0 "${LOCAL_ARGS[@]}" "${PUBLIC_ARGS[@]}" "$@"

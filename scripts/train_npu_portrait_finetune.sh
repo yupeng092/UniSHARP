@@ -23,6 +23,15 @@ UNIK3D_BACKBONE="${UNIK3D_BACKBONE:-vitl}"
 }
 export UNIK3D_BACKBONE
 
+# The released checkpoint's config uses stride=1.  Do not silently create a
+# lower-density (one-quarter Gaussian count) fine-tuned checkpoint.
+INITIALIZER_STRIDE="${INITIALIZER_STRIDE:-1}"
+[[ "${INITIALIZER_STRIDE}" == "1" ]] || {
+  echo "Official UniSHARP checkpoint fine-tuning requires INITIALIZER_STRIDE=1 (got ${INITIALIZER_STRIDE})." >&2
+  exit 1
+}
+export INITIALIZER_STRIDE
+
 STEPS="${STEPS:-30000}"
 UNIK3D_PROGRESSIVE_UNFREEZE="${UNIK3D_PROGRESSIVE_UNFREEZE:-1}"
 UNIK3D_DECODER_UNFREEZE_STEP="${UNIK3D_DECODER_UNFREEZE_STEP:-5000}"

@@ -62,6 +62,8 @@ add_dataset "${COCO_PERSON_MANIFEST}" "${COCO_PERSON_WEIGHT}" --coco-person-mani
 add_dataset "${OPENIMAGES_PERSON_MANIFEST}" "${OPENIMAGES_PERSON_WEIGHT}" --openimages-person-manifest --dataset-weight-openimages-person "OpenImages Person"
 [[ "${#DATASET_ARGS[@]}" -gt 0 ]] || { echo "Enable at least one of LOCAL_IMAGES_WEIGHT, COCO_PERSON_WEIGHT, or OPENIMAGES_PERSON_WEIGHT." >&2; exit 1; }
 
+# Preserve the released checkpoint's stride=1 Gaussian grid; stride=2 would
+# generate only one quarter of the Gaussians at equal resolution.
 exec python -m unisharp.cli train-feature \
   --device cpu --renderer-backend portable \
   --portable-renderer-max-gaussians "${PORTABLE_MAX_GAUSSIANS}" \
@@ -69,7 +71,7 @@ exec python -m unisharp.cli train-feature \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \
   --steps "${STEPS}" --batch-size "${BATCH_SIZE}" --num-workers "${NUM_WORKERS}" \
   --pinhole-train-height "${PINHOLE_TRAIN_HEIGHT}" --pinhole-train-width "${PINHOLE_TRAIN_WIDTH}" --train-resize-multiple 0 \
-  --unik3d-backbone vitl --initializer-stride 2 \
+  --unik3d-backbone vitl --initializer-stride 1 \
   --init-checkpoint "${FINETUNE_CHECKPOINT}" --init-checkpoint-strict \
   --unik3d-progressive-unfreeze --unik3d-decoder-unfreeze-step 5 --unik3d-encoder-unfreeze-step 15 --unik3d-encoder-last-n-blocks 4 \
   --lr0 2e-5 --lr1 2e-6 --unik3d-lr0 5e-6 --unik3d-lr1 5e-7 --unik3d-encoder-lr0 5e-7 --unik3d-encoder-lr1 5e-8 \
