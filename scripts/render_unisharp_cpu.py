@@ -474,12 +474,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--backend", choices=("torch", "cpu", "flash3d_torch", "legacy", "native", "gsplat"), default="torch",
+        "--backend", choices=("torch", "cpu", "flash3d_torch", "legacy", "native", "gsplat", "ascend_fused"), default="torch",
         help=(
             "torch/default and cpu: gsplat-classic CPU reference; "
             "flash3d_torch: prior Flash3D portable PyTorch renderer; legacy is the earlier lightweight "
             "CPU approximation; native uses Flash3D CUDA "
-            "diff-gaussian-rasterization; gsplat uses gsplat CUDA"
+            "diff-gaussian-rasterization; gsplat uses gsplat CUDA; "
+            "ascend_fused uses CANN meta_gauss_render on Ascend NPU"
         ),
     )
     parser.add_argument("--rig", choices=("cross5", "arc5", "grid9"), default="cross5")
@@ -879,6 +880,48 @@ def rasterize_with_backend(
             gaussians, transform, fx, fy, cx, cy, width, height, background,
             args.near, args.far, args.scale_modifier, args.gsplat_eps2d, args.gsplat_radius_clip,
         )
+    if args.backend == "ascend_fused":
+        if not hasattr(torch, "npu") or not torch.npu.is_available():
+            raise RuntimeError("--backend ascend_fused requires a visible Ascend NPU and torch_npu.")
+        background_value = tuple(float(value) for value in background.tolist())
+        if background_value not in {(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)}:
+            raise ValueError("--backend ascend_fused supports only black or white --background.")
+        from unisharp.utils.ascend_fused_renderer import AscendFusedGaussianRenderer
+
+        device = torch.device("npu:0")
+        renderer = getattr(args, "_ascend_fused_renderer", None)
+        if renderer is None:
+            renderer = AscendFusedGaussianRenderer(
+                background_color="white" if background_value[0] == 1.0 else "black",
+                tile_size=32,
+                low_pass_filter_eps=float(args.gsplat_eps2d),
+                near=float(args.near),
+                far=float(args.far),
+            ).to(device)
+            args._ascend_fused_renderer = renderer
+        scene = Gaussians3D(
+            gaussians["xyz"].to(device=device, dtype=torch.float32).unsqueeze(0),
+            (gaussians["scaling"].to(device=device, dtype=torch.float32) * float(args.scale_modifier)).unsqueeze(0),
+            gaussians["rotation"].to(device=device, dtype=torch.float32).unsqueeze(0),
+            gaussians["color"].to(device=device, dtype=torch.float32).unsqueeze(0),
+            gaussians["opacity"].to(device=device, dtype=torch.float32).unsqueeze(0),
+        )
+        intrinsics = torch.tensor(
+            ((fx, 0.0, cx), (0.0, fy, cy), (0.0, 0.0, 1.0)), device=device, dtype=torch.float32
+        )
+        output = renderer(
+            scene,
+            extrinsics=transform.to(device=device, dtype=torch.float32).unsqueeze(0),
+            intrinsics=intrinsics.unsqueeze(0),
+            image_width=int(width),
+            image_height=int(height),
+        )
+        return (
+            output.color[0].detach().cpu(),
+            output.alpha[0].detach().cpu(),
+            output.depth[0].detach().cpu(),
+            int(gaussians["xyz"].shape[0]),
+        )
     if args.backend in {"torch", "cpu"}:
         return rasterize_gsplat_cpu_reference(
             gaussians, transform, camera_center, fx, fy, cx, cy,
@@ -1208,6 +1251,14 @@ def render(args: argparse.Namespace) -> None:
         _native_renderer_dependencies()
     elif args.backend == "gsplat":
         _gsplat_renderer_dependency()
+    elif args.backend == "ascend_fused":
+        from unisharp.utils.ascend_fused_renderer import ascend_fused_renderer_available
+
+        if not ascend_fused_renderer_available():
+            raise RuntimeError(
+                "CANN meta_gauss_render is unavailable. Run `bash scripts/install_meta_gauss_render.sh "
+                "--source /path/to/cann-recipes-embodied-ai` first."
+            )
     torch.set_num_threads(args.threads)
     # PyTorch allows this process-wide setting only before parallel work has
     # started. The CLI sets it here; an embedding host may already have run a
@@ -1290,6 +1341,8 @@ def render(args: argparse.Namespace) -> None:
     for index, camera in enumerate(cameras):
         if args.backend in {"native", "gsplat"}:
             torch.cuda.synchronize()
+        elif args.backend == "ascend_fused":
+            torch.npu.synchronize()
         start = time.perf_counter()
         transform, target = camera_transform(camera, default_target, args.camera_orientation)
         camera_center = torch.tensor(camera["position_xyz"], dtype=torch.float32)
@@ -1299,6 +1352,8 @@ def render(args: argparse.Namespace) -> None:
         )
         if args.backend in {"native", "gsplat"}:
             torch.cuda.synchronize()
+        elif args.backend == "ascend_fused":
+            torch.npu.synchronize()
         elapsed = time.perf_counter() - start
         rgb = unsharp_mask(crop_and_downsample(rgb, args.height, args.width, args.supersample, args.crop_margin), args.sharpen)
         if args.linear_to_srgb:
@@ -1346,7 +1401,7 @@ def render(args: argparse.Namespace) -> None:
     comparison_grid = save_contact_sheet(rgb_entries, args.output, args.contact_sheet_columns, args.contact_sheet_title, args.contact_sheet_title_size)
     point_cloud = save_gaussian_point_cloud(gaussians, args.output, args.gaussians) if args.save_gaussians else None
     report = {
-        "device": "cuda" if args.backend in {"native", "gsplat"} else "cpu",
+        "device": "cuda" if args.backend in {"native", "gsplat"} else ("npu" if args.backend == "ascend_fused" else "cpu"),
         "renderer": (
             "Flash3D native diff-gaussian-rasterization CUDA backend"
             if args.backend == "native"
@@ -1357,9 +1412,13 @@ def render(args: argparse.Namespace) -> None:
                     "gsplat classic-semantics CPU reference renderer"
                     if args.backend in {"torch", "cpu"}
                     else (
-                        "Flash3D portable PyTorch tile renderer (CPU)"
-                        if args.backend == "flash3d_torch"
-                        else "Legacy PyTorch anisotropic 3D Gaussian + front-to-back alpha blending"
+                        "CANN meta_gauss_render fused Ascend NPU rasterizer"
+                        if args.backend == "ascend_fused"
+                        else (
+                            "Flash3D portable PyTorch tile renderer (CPU)"
+                            if args.backend == "flash3d_torch"
+                            else "Legacy PyTorch anisotropic 3D Gaussian + front-to-back alpha blending"
+                        )
                     )
                 )
             )

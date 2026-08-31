@@ -170,11 +170,24 @@ Use the official gt-override training launcher:
 bash scripts/train.sh
 ```
 
-### CPU / Ascend NPU portable pre-training
+### CPU / Ascend NPU pre-training
 
-The portable path uses a differentiable, standard-PyTorch pinhole Gaussian
-renderer. It is intended for RE10K/WildRGB-D/DL3DV pre-training and does not
-support the CUDA-only panoramic, fisheye, or GEER rendering branches. Set the
+The Ascend launchers use CANN's fused `meta_gauss_render` 3DGS operators by
+default. This moves projection, culling, tile construction, sorting and alpha
+compositing onto custom NPU kernels. Build it once after CANN is available:
+
+```bash
+# Download/extract cann-recipes-embodied-ai locally and upload it if the NPU
+# server has no git access, then:
+bash scripts/install_meta_gauss_render.sh \
+  --source /path/to/cann-recipes-embodied-ai
+python scripts/check_npu_env.py --require-meta-gauss-render
+```
+
+Set `NPU_RENDERER_BACKEND=portable` only as a slower, standard-PyTorch
+reference fallback. Both NPU renderers are intended for pinhole
+RE10K/WildRGB-D/DL3DV-style training and do not support the CUDA-only
+panoramic, fisheye, or GEER rendering branches. Set the
 dataset and manifest roots first:
 
 ```bash
@@ -316,7 +329,8 @@ bash scripts/train_npu_portrait_finetune.sh \
   --dataset-weight-coco-person 0.5
 ```
 
-The wrapper uses the NPU portable renderer, not CUDA `gsplat`. It freezes
+The wrapper uses the CANN fused NPU renderer by default (set
+`NPU_RENDERER_BACKEND=portable` only for fallback), not CUDA `gsplat`. It freezes
 UniK3D initially, unfreezes its decoder at step 5000, and the final four
 encoder blocks at step 15000. Use the multi-card version with `NPU_IDS`:
 
@@ -436,19 +450,23 @@ NPU_IDS=0,1,2,3 bash scripts/train_npu_portable_ddp.sh
 the required PyTorch/torch_npu version-matching rule. Install that matched
 three-package set before running the requirements file.
 
-These launchers use the `vits` UniK3D backbone by default and write a
-portable-renderer configuration into each output directory. For offline
-multi-view rendering of exported Gaussian scenes, use
-`D:/PythonFiles/flash3d-main/render_cpu_multiview.py`; it is an inference
-tool, not the differentiable renderer used during training.
+These launchers use the `vits` UniK3D backbone by default and write the
+selected renderer configuration into each output directory. For fused offline
+multi-view NPU rendering of an exported `gaussians.pt`, use:
+
+```bash
+bash scripts/render_unisharp_npu.sh \
+  --gaussians /path/to/gaussians.pt --output outputs/npu_grid9 \
+  --rig grid9 --height 512 --width 768
+```
 
 The NPU launchers default to a rectangular `1536x1024` pinhole input
 (width x height), with `--train-resize-multiple 0`, so every pinhole dataset
 is resized to the same geometry before the UniSHARP forward pass. Override
 with `PINHOLE_TRAIN_WIDTH` and `PINHOLE_TRAIN_HEIGHT` together. This is much
-larger than the old 256-square smoke-test setting: the portable renderer
-still follows the full gsplat reference math, so use batch size 1 and expect
-substantially lower throughput than the fused CUDA renderer.
+larger than the old 256-square smoke-test setting. Use batch size 1 initially;
+the fused NPU backend is substantially faster than the portable reference,
+but must be profiled on the target Ascend model/CANN release.
 
 #### NPU asset download and resolution policy
 
@@ -498,11 +516,13 @@ and its pixel budget is 200k--600k. The current NPU launchers use
 `--unik3d-resolution-level 0`, selecting the 200k--240k tier; the outer
 `1536x1024` training image is therefore internally resampled to the selected
 UniK3D feature tier and aligned back afterwards. This preserves the UniK3D
-resolution policy. The portable renderer now follows the
+resolution policy. The portable fallback renderer follows the
 gsplat-classic pinhole mathematics (2D covariance filtering, 3.33-sigma tile
 bounds, depth ordering, alpha threshold/cap, and early-transmittance stopping)
 without default Gaussian culling. It is a PyTorch reference implementation,
-so it is much slower than a fused CUDA/NPU rasterizer.
+so it is much slower than a fused CUDA/NPU rasterizer. The CANN fused backend
+is not bit-identical to CUDA gsplat because its clipping and scheduling rules
+are implemented by the Ascend recipe's custom kernels.
 
 For renderer-semantic validation, run the CUDA comparison before moving a
 configuration to NPU training. It uses the native `gsplat` renderer and this

@@ -579,7 +579,13 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--scanetpp-fisheye-far-depth-invalid-m", type=float, default=30.0, show_default=True)
 @click.option("--max-index-gap", type=int, default=10)
 @click.option("--device", type=str, default="cuda")
-@click.option("--renderer-backend", type=click.Choice(["gsplat", "portable"]), default="gsplat", show_default=True)
+@click.option(
+    "--renderer-backend",
+    type=click.Choice(["gsplat", "portable", "ascend_fused"]),
+    default="gsplat",
+    show_default=True,
+    help="CUDA gsplat, PyTorch reference, or CANN meta_gauss_render fused NPU backend.",
+)
 @click.option("--portable-renderer-max-gaussians", type=int, default=0, show_default=True, help="0 keeps every visible Gaussian (gsplat-reference mode).")
 @click.option("--portable-renderer-max-gaussians-per-tile", type=int, default=0, show_default=True, help="0 keeps every Gaussian intersecting a tile (gsplat-reference mode).")
 @click.option("--portable-renderer-tile-size", type=int, default=16, show_default=True)
@@ -846,12 +852,13 @@ def train_feature_cli(
         raise ValueError("Portable renderer tile size must be positive and tile span non-negative.")
     if int(portable_renderer_tile_span) > 0 and int(portable_renderer_tile_span) % 2 == 0:
         raise ValueError("--portable-renderer-tile-span must be odd.")
-    if renderer_backend == "portable" and any(
+    if renderer_backend in {"portable", "ascend_fused"} and any(
         float(weight) > 0.0
         for weight in (dataset_weight_hm3d, dataset_weight_sim, dataset_weight_scanetpp)
     ):
         raise ValueError(
-            "The portable renderer supports pinhole datasets only. Set the HM3D, SIM and ScanNet++ weights to zero."
+            "The portable and Ascend fused renderers support pinhole datasets only. "
+            "Set the HM3D, SIM and ScanNet++ weights to zero."
         )
     dev, rank, world_size, is_main = _ddp_setup(device, ddp_timeout_hours=ddp_timeout_hours)
 
@@ -1527,7 +1534,7 @@ def train_feature_cli(
             background_color="black",
             low_pass_filter_eps=float(render_low_pass_filter_eps),
         ).to(dev)
-    else:
+    elif renderer_backend == "portable":
         from unisharp.utils.portable_renderer import PortableGaussianRenderer
 
         renderer = PortableGaussianRenderer(
@@ -1536,6 +1543,20 @@ def train_feature_cli(
             tile_span=int(portable_renderer_tile_span),
             max_gaussians=int(portable_renderer_max_gaussians),
             max_gaussians_per_tile=int(portable_renderer_max_gaussians_per_tile),
+            low_pass_filter_eps=float(render_low_pass_filter_eps),
+        ).to(dev)
+    else:
+        if dev.type != "npu":
+            raise ValueError("--renderer-backend ascend_fused requires --device npu.")
+        if int(portable_renderer_max_gaussians) or int(portable_renderer_max_gaussians_per_tile):
+            raise ValueError(
+                "--portable-renderer-max-gaussians* options apply only to renderer-backend=portable."
+            )
+        from unisharp.utils.ascend_fused_renderer import AscendFusedGaussianRenderer
+
+        renderer = AscendFusedGaussianRenderer(
+            background_color="black",
+            tile_size=32,
             low_pass_filter_eps=float(render_low_pass_filter_eps),
         ).to(dev)
 

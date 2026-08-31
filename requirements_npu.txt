@@ -1,9 +1,9 @@
 # UniSHARP portable Ascend NPU training environment (Linux only)
 #
-# This file is for scripts/train_npu_portable.sh and
-# scripts/train_npu_portable_ddp.sh.  Those scripts use the standard-PyTorch
-# portable renderer; they do NOT use gsplat, CUDA, Triton, 3DGEER, or the CUDA
-# KNN extension listed in requirements.txt.
+# This file is for the Ascend NPU launchers. They default to CANN's fused
+# meta_gauss_render 3DGS operators and can fall back to the standard-PyTorch
+# portable renderer with NPU_RENDERER_BACKEND=portable. Neither path uses
+# CUDA gsplat, Triton, 3DGEER, or the CUDA KNN extension in requirements.txt.
 #
 # ---------------------------------------------------------------------------
 # System prerequisites — install these BEFORE pip, not through this file.
@@ -32,6 +32,16 @@
 # torch==<MATCHED_TORCH_VERSION>
 # torchvision==<MATCHED_TORCHVISION_VERSION>
 # torch_npu==<MATCHED_TORCH_NPU_VERSION>
+
+# Fused Ascend Gaussian renderer (recommended)
+# ---------------------------------------------------------------------------
+# meta_gauss_render is an AscendC custom-op wheel, so it cannot be installed
+# portably by pip from this requirements file. Obtain the CANN recipe source
+# or a prebuilt wheel and run, after sourcing CANN:
+#   bash scripts/install_meta_gauss_render.sh --source /path/to/cann-recipes-embodied-ai
+# The CANN reference recipe currently documents Atlas A2, CANN 8.2.RC1,
+# torch 2.1.0 and torch_npu 2.1.0.post12. Treat that as a known-good starting
+# point and use the Ascend compatibility matrix for other NPU/CANN releases.
 
 # Core training and data dependencies. Install only after torch, torchvision,
 # and torch_npu have been installed as a compatible set.
@@ -62,7 +72,7 @@ plyfile>=1.0.3
 # Intentionally excluded CUDA-only packages:
 #   gsplat, triton, xformers, 3DGEER/diff-gaussian-rasterization,
 #   UniK3D/unik3d/ops/knn CUDA extension, and CUDA PyTorch wheels.
-# The portable NPU scripts also set --lambda-percep 0, so LPIPS is optional.
+# The NPU scripts also set --lambda-percep 0, so LPIPS is optional.
 # ---------------------------------------------------------------------------
 # lpips>=0.1.4
 
@@ -108,7 +118,7 @@ plyfile>=1.0.3
 #   DATA_ROOT_DL3DV_DEPTH for the mixed NPU launcher.
 # * Set DATASET_MANIFEST_DIR to the directory containing
 #   re10k_train_chunks.txt and the other UniSHARP manifests.
-# * Verify the host after CANN setup and package installation:
-#      python scripts/check_npu_env.py
-# * Then launch either scripts/train_npu_portable.sh or
-#   scripts/train_npu_portable_ddp.sh.
+# * Verify fused rendering after CANN and the custom wheel are installed:
+#      python scripts/check_npu_env.py --require-meta-gauss-render
+# * Then launch the NPU scripts normally. They use `ascend_fused` by default;
+#   set NPU_RENDERER_BACKEND=portable only for fallback/debugging.

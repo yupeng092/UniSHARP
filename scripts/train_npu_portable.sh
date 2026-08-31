@@ -16,6 +16,11 @@ export ASCEND_RT_VISIBLE_DEVICES="${NPU_ID}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/UniK3D:${PYTHONPATH:-}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+NPU_RENDERER_BACKEND="${NPU_RENDERER_BACKEND:-ascend_fused}"
+[[ "${NPU_RENDERER_BACKEND}" == "ascend_fused" || "${NPU_RENDERER_BACKEND}" == "portable" ]] || {
+  echo "NPU_RENDERER_BACKEND must be ascend_fused or portable." >&2
+  exit 1
+}
 
 : "${DATASET_MANIFEST_DIR:?Set DATASET_MANIFEST_DIR to the UniSHARP manifests directory.}"
 : "${DATA_ROOT_RE10K:?Set DATA_ROOT_RE10K to the processed RE10K root.}"
@@ -23,7 +28,9 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 : "${DATA_ROOT_DL3DV:?Set DATA_ROOT_DL3DV to the DL3DV RGB/pose root.}"
 : "${DATA_ROOT_DL3DV_DEPTH:?Set DATA_ROOT_DL3DV_DEPTH to the prepared DL3DV depth root.}"
 
-python "${SCRIPT_DIR}/check_npu_env.py"
+CHECK_ARGS=()
+[[ "${NPU_RENDERER_BACKEND}" == "ascend_fused" ]] && CHECK_ARGS+=(--require-meta-gauss-render)
+python "${SCRIPT_DIR}/check_npu_env.py" "${CHECK_ARGS[@]}"
 
 OUT_ROOT="${OUT_ROOT:-${REPO_ROOT}/outputs_npu}"
 RUN_NAME="${RUN_NAME:-unisharp_npu_$(date +%Y%m%d_%H%M%S)}"
@@ -50,7 +57,7 @@ WILD_ROOTS_FILE="${WILD_ROOTS_FILE:-${DATASET_MANIFEST_DIR}/wildrgbd_roots.txt}"
 
 exec python -m unisharp.cli train-feature \
   --device npu \
-  --renderer-backend portable \
+  --renderer-backend "${NPU_RENDERER_BACKEND}" \
   --portable-renderer-max-gaussians "${PORTABLE_MAX_GAUSSIANS}" \
   --portable-renderer-max-gaussians-per-tile "${PORTABLE_MAX_GAUSSIANS_PER_TILE}" \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \

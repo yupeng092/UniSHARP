@@ -20,8 +20,15 @@ export ASCEND_RT_VISIBLE_DEVICES="${NPU_ID}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/UniK3D:${PYTHONPATH:-}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+NPU_RENDERER_BACKEND="${NPU_RENDERER_BACKEND:-ascend_fused}"
+[[ "${NPU_RENDERER_BACKEND}" == "ascend_fused" || "${NPU_RENDERER_BACKEND}" == "portable" ]] || {
+  echo "NPU_RENDERER_BACKEND must be ascend_fused or portable." >&2
+  exit 1
+}
 
-python "${SCRIPT_DIR}/check_npu_env.py"
+CHECK_ARGS=()
+[[ "${NPU_RENDERER_BACKEND}" == "ascend_fused" ]] && CHECK_ARGS+=(--require-meta-gauss-render)
+python "${SCRIPT_DIR}/check_npu_env.py" "${CHECK_ARGS[@]}"
 
 INIT_CHECKPOINT="${INIT_CHECKPOINT:?Set INIT_CHECKPOINT to a released UniSHARP checkpoint.}"
 [[ -f "${INIT_CHECKPOINT}" ]] || { echo "Checkpoint was not found: ${INIT_CHECKPOINT}" >&2; exit 1; }
@@ -39,7 +46,7 @@ PORTABLE_MAX_GAUSSIANS="${PORTABLE_MAX_GAUSSIANS:-0}"
 PORTABLE_MAX_GAUSSIANS_PER_TILE="${PORTABLE_MAX_GAUSSIANS_PER_TILE:-0}"
 
 exec python -m unisharp.cli train-feature \
-  --device npu --renderer-backend portable \
+  --device npu --renderer-backend "${NPU_RENDERER_BACKEND}" \
   --portable-renderer-max-gaussians "${PORTABLE_MAX_GAUSSIANS}" \
   --portable-renderer-max-gaussians-per-tile "${PORTABLE_MAX_GAUSSIANS_PER_TILE}" \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \
