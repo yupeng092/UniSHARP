@@ -14,7 +14,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/UniK3D:${PYTHONPATH:-}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export HCCL_CONNECT_TIMEOUT="${HCCL_CONNECT_TIMEOUT:-1800}"
 
-: "${DATASET_MANIFEST_DIR:?Set DATASET_MANIFEST_DIR (normally <repo>/dataset_manifests).}"
+DATASET_MANIFEST_DIR="${DATASET_MANIFEST_DIR:-${REPO_ROOT}/dataset_manifests}"
 IFS=',' read -r -a NPU_ID_ARRAY <<< "${NPU_IDS}"
 WORLD_SIZE="${#NPU_ID_ARRAY[@]}"
 [[ "${WORLD_SIZE}" -ge 2 ]] || { echo "NPU_IDS must contain at least two IDs." >&2; exit 1; }
@@ -38,7 +38,7 @@ UNIK3D_ENCODER_UNFREEZE_STEP="${UNIK3D_ENCODER_UNFREEZE_STEP:-50000}"
 UNIK3D_ENCODER_LAST_N_BLOCKS="${UNIK3D_ENCODER_LAST_N_BLOCKS:-4}"
 UNIK3D_ENCODER_FULL_UNFREEZE_STEP="${UNIK3D_ENCODER_FULL_UNFREEZE_STEP:-0}"
 LOCAL_IMAGES_ROOT="${LOCAL_IMAGES_ROOT:-}"
-LOCAL_IMAGES_MANIFEST="${LOCAL_IMAGES_MANIFEST:-${DATASET_MANIFEST_DIR}/local_images.txt}"
+LOCAL_IMAGES_MANIFEST="${LOCAL_IMAGES_MANIFEST:-}"
 LOCAL_COLMAP_ROOT="${LOCAL_COLMAP_ROOT:-}"
 LOCAL_MULTIVIEW_MANIFEST="${LOCAL_MULTIVIEW_MANIFEST:-${DATASET_MANIFEST_DIR}/local_multiview.jsonl}"
 LOCAL_IMAGES_WEIGHT="${LOCAL_IMAGES_WEIGHT:-1.0}"; LOCAL_MULTIVIEW_WEIGHT="${LOCAL_MULTIVIEW_WEIGHT:-0.0}"
@@ -55,16 +55,18 @@ NEUMAN_WEIGHT="${NEUMAN_WEIGHT:-0.0}"
 NERFIES_MANIFEST="${NERFIES_MANIFEST:-${DATASET_MANIFEST_DIR}/nerfies_multiview.jsonl}"
 NERFIES_WEIGHT="${NERFIES_WEIGHT:-0.0}"
 
-if [[ ! -f "${LOCAL_IMAGES_MANIFEST}" && -n "${LOCAL_IMAGES_ROOT}" ]]; then
-  python "${SCRIPT_DIR}/prepare_local_images.py" --source-root "${LOCAL_IMAGES_ROOT}" --manifest "${LOCAL_IMAGES_MANIFEST}"
-fi
 if [[ ! -f "${LOCAL_MULTIVIEW_MANIFEST}" && -n "${LOCAL_COLMAP_ROOT}" ]]; then
   python "${SCRIPT_DIR}/prepare_calibrated_colmap.py" --source-root "${LOCAL_COLMAP_ROOT}" --manifest "${LOCAL_MULTIVIEW_MANIFEST}"
 fi
 LOCAL_ARGS=()
 if [[ "${LOCAL_IMAGES_WEIGHT}" != "0" && "${LOCAL_IMAGES_WEIGHT}" != "0.0" ]]; then
-  [[ -f "${LOCAL_IMAGES_MANIFEST}" ]] || { echo "Set LOCAL_IMAGES_ROOT or LOCAL_IMAGES_MANIFEST." >&2; exit 1; }
-  LOCAL_ARGS+=(--local-images-manifest "${LOCAL_IMAGES_MANIFEST}" --dataset-weight-local-images "${LOCAL_IMAGES_WEIGHT}")
+  if [[ -n "${LOCAL_IMAGES_ROOT}" ]]; then
+    [[ -d "${LOCAL_IMAGES_ROOT}" ]] || { echo "Local image directory was not found: ${LOCAL_IMAGES_ROOT}" >&2; exit 1; }
+    LOCAL_ARGS+=(--local-images-root "${LOCAL_IMAGES_ROOT}" --dataset-weight-local-images "${LOCAL_IMAGES_WEIGHT}")
+  else
+    [[ -f "${LOCAL_IMAGES_MANIFEST}" ]] || { echo "Set LOCAL_IMAGES_ROOT for direct folder training (or LOCAL_IMAGES_MANIFEST for legacy manifests)." >&2; exit 1; }
+    LOCAL_ARGS+=(--local-images-manifest "${LOCAL_IMAGES_MANIFEST}" --dataset-weight-local-images "${LOCAL_IMAGES_WEIGHT}")
+  fi
 fi
 if [[ "${LOCAL_MULTIVIEW_WEIGHT}" != "0" && "${LOCAL_MULTIVIEW_WEIGHT}" != "0.0" ]]; then
   [[ -f "${LOCAL_MULTIVIEW_MANIFEST}" ]] || { echo "Set LOCAL_COLMAP_ROOT or LOCAL_MULTIVIEW_MANIFEST." >&2; exit 1; }
@@ -100,8 +102,15 @@ CHECK_ARGS=()
 [[ "${NPU_RENDERER_BACKEND}" == "ascend_fused" ]] && CHECK_ARGS+=(--require-meta-gauss-render)
 python "${SCRIPT_DIR}/check_npu_env.py" "${CHECK_ARGS[@]}"
 
+PORTABLE_RENDERER_ARGS=()
+if [[ "${NPU_RENDERER_BACKEND}" == "portable" ]]; then
+  : "${MAX_GAUSSIANS:?Set MAX_GAUSSIANS when NPU_RENDERER_BACKEND=portable (for example 65536).}"
+  PORTABLE_RENDERER_ARGS=(--portable-renderer-max-gaussians "${MAX_GAUSSIANS}")
+fi
+
 exec torchrun --standalone --nproc_per_node="${WORLD_SIZE}" --master_port="${MASTER_PORT}" -m unisharp.cli train-feature \
   --device npu --renderer-backend "${NPU_RENDERER_BACKEND}" --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" --steps "${STEPS}" \
+  "${PORTABLE_RENDERER_ARGS[@]}" \
   --batch-size "${BATCH_SIZE}" --num-workers "${NUM_WORKERS}" --pinhole-train-height "${PINHOLE_TRAIN_HEIGHT}" --pinhole-train-width "${PINHOLE_TRAIN_WIDTH}" --train-resize-multiple 0 \
   --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride "${INITIALIZER_STRIDE}" \
   "${UNIK3D_UNFREEZE_ARGS[@]}" \

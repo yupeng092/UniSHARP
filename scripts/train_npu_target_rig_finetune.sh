@@ -42,13 +42,20 @@ PINHOLE_TRAIN_WIDTH="${PINHOLE_TRAIN_WIDTH:-1536}"
 TARGET_RIG_EMBED_DIM="${TARGET_RIG_EMBED_DIM:-128}"
 TARGET_RIG_TRANSLATION_SCALE="${TARGET_RIG_TRANSLATION_SCALE:-1.0}"
 UNIK3D_BACKBONE="${UNIK3D_BACKBONE:-vitl}"
-PORTABLE_MAX_GAUSSIANS="${PORTABLE_MAX_GAUSSIANS:-0}"
-PORTABLE_MAX_GAUSSIANS_PER_TILE="${PORTABLE_MAX_GAUSSIANS_PER_TILE:-0}"
+INITIALIZER_STRIDE="${INITIALIZER_STRIDE:-1}"
+[[ "${INITIALIZER_STRIDE}" == "1" ]] || {
+  echo "Official UniSHARP target-rig fine-tuning requires INITIALIZER_STRIDE=1 (got ${INITIALIZER_STRIDE})." >&2
+  exit 1
+}
+PORTABLE_RENDERER_ARGS=()
+if [[ "${NPU_RENDERER_BACKEND}" == "portable" ]]; then
+  : "${MAX_GAUSSIANS:?Set MAX_GAUSSIANS when NPU_RENDERER_BACKEND=portable (for example 65536).}"
+  PORTABLE_RENDERER_ARGS=(--portable-renderer-max-gaussians "${MAX_GAUSSIANS}")
+fi
 
 exec python -m unisharp.cli train-feature \
   --device npu --renderer-backend "${NPU_RENDERER_BACKEND}" \
-  --portable-renderer-max-gaussians "${PORTABLE_MAX_GAUSSIANS}" \
-  --portable-renderer-max-gaussians-per-tile "${PORTABLE_MAX_GAUSSIANS_PER_TILE}" \
+  "${PORTABLE_RENDERER_ARGS[@]}" \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \
   --steps "${STEPS}" --batch-size "${BATCH_SIZE}" --num-workers "${NUM_WORKERS}" \
   --init-checkpoint "${INIT_CHECKPOINT}" \
@@ -56,7 +63,7 @@ exec python -m unisharp.cli train-feature \
   --pinhole-train-height "${PINHOLE_TRAIN_HEIGHT}" \
   --pinhole-train-width "${PINHOLE_TRAIN_WIDTH}" \
   --train-resize-multiple 0 \
-  --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride 2 \
+  --unik3d-backbone "${UNIK3D_BACKBONE}" --initializer-stride "${INITIALIZER_STRIDE}" \
   --target-rig-conditioning \
   --target-rig-embedding-dim "${TARGET_RIG_EMBED_DIM}" \
   --target-rig-translation-scale "${TARGET_RIG_TRANSLATION_SCALE}" \

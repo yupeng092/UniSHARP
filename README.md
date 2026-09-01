@@ -402,6 +402,7 @@ are not practical full CPU training launchers. For example:
 export DATASET_MANIFEST_DIR="$PWD/dataset_manifests"
 export COCO_PERSON_WEIGHT=0.5
 export OPENIMAGES_PERSON_WEIGHT=1.0
+export MAX_GAUSSIANS=16384
 bash scripts/train_cpu_portrait_finetune.sh
 ```
 
@@ -409,15 +410,21 @@ On Windows, run the matching PowerShell wrapper directly:
 
 ```powershell
 .\scripts\train_cpu_portrait_finetune.ps1 `
-  -DatasetManifestDir "$PWD\dataset_manifests" `
-  -CocoPersonWeight 0.5 `
-  -OpenImagesPersonWeight 1.0
+  -LocalImagesRoot 'D:\data\my_training_images' `
+  -LocalImagesWeight 1.0 `
+  -MaxGaussians 16384
 ```
 
-Use `scripts/prepare_local_images.py` and
-`scripts/prepare_calibrated_colmap.py` directly when you prefer explicit
-manifest paths. Local image-only training uses an identity target camera, so
-it improves portrait appearance but cannot replace calibrated multi-view data.
+For local appearance fine-tuning, pass `-LocalImagesRoot` (PowerShell) or
+`LOCAL_IMAGES_ROOT=/data/my_training_images` (shell). The loader recursively
+reads image files directly; no JSONL/TXT manifest is created or required.
+`MAX_GAUSSIANS` is mandatory only for the CPU/PyTorch portable renderer. The
+CANN fused NPU backend always renders the full Gaussian set, so it deliberately
+does not accept a truncation cap. Local image-only training uses an identity
+target camera, so it improves portrait appearance but cannot replace calibrated
+multi-view data. Rig-conditioned training still requires calibrated JSONL,
+because source/target camera poses cannot be recovered from an unstructured
+image folder.
 
 Calibrated JSONL schema (one scene per line). `w2c` uses OpenCV
 world-to-camera convention and intrinsics are pixel 3×3 matrices:

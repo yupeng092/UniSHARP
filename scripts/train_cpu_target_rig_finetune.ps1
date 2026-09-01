@@ -15,6 +15,10 @@ param(
     [int]$NumWorkers = 2,
     [int]$Height = 256,
     [int]$Width = 384,
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxGaussians,
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxGaussiansPerTile = 96,
     [int]$TargetRigEmbedDim = 128,
     [double]$TargetRigTranslationScale = 1.0,
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -34,11 +38,11 @@ $env:OMP_NUM_THREADS = "$Threads"
 $trainArgs = @(
     "-m", "unisharp.cli", "train-feature",
     "--device", "cpu", "--renderer-backend", "portable",
-    "--portable-renderer-max-gaussians", "16384", "--portable-renderer-max-gaussians-per-tile", "96",
+    "--portable-renderer-max-gaussians", "$MaxGaussians", "--portable-renderer-max-gaussians-per-tile", "$MaxGaussiansPerTile",
     "--out-root", $OutRoot, "--run-name", $RunName,
     "--steps", "$Steps", "--batch-size", "1", "--num-workers", "$NumWorkers",
     "--pinhole-train-height", "$Height", "--pinhole-train-width", "$Width", "--train-resize-multiple", "0",
-    "--unik3d-backbone", "vitl", "--initializer-stride", "2",
+    "--unik3d-backbone", "vitl", "--initializer-stride", "1",
     "--init-checkpoint", $InitCheckpoint, "--no-init-checkpoint-strict",
     "--target-rig-conditioning", "--target-rig-embedding-dim", "$TargetRigEmbedDim",
     "--target-rig-translation-scale", "$TargetRigTranslationScale",

@@ -11,6 +11,7 @@ must be mixed with a calibrated multi-view corpus for novel-view geometry.
 import json
 import random
 from pathlib import Path
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -24,8 +25,9 @@ from unisharp.datasets.re10k import Re10KPairSample
 class AppearanceDataset(IterableDataset[Re10KPairSample]):
     def __init__(
         self,
-        manifest: Path,
+        manifest: Path | None = None,
         *,
+        image_roots: Sequence[Path] | None = None,
         output_h: int,
         output_w: int,
         crop_probability: float = 0.8,
@@ -34,16 +36,27 @@ class AppearanceDataset(IterableDataset[Re10KPairSample]):
         seed: int = 0,
     ) -> None:
         super().__init__()
-        self.manifest = Path(manifest)
         self.output_h, self.output_w = int(output_h), int(output_w)
         if self.output_h < 1 or self.output_w < 1:
             raise ValueError("AppearanceDataset requires a positive fixed output size.")
         self.crop_probability = float(crop_probability)
         self.ddp_rank, self.ddp_world_size = int(ddp_rank), int(ddp_world_size)
         self.seed, self.epoch = int(seed), 0
-        self.records = self._read_manifest(self.manifest)
+        roots = tuple(Path(root) for root in (image_roots or ()))
+        if manifest is not None and roots:
+            raise ValueError("Specify either an appearance manifest or image_roots, not both.")
+        if manifest is None and not roots:
+            raise ValueError("AppearanceDataset requires an appearance manifest or at least one image root.")
+        self.manifest = None if manifest is None else Path(manifest)
+        self.image_roots = roots
+        self.records = (
+            self._read_manifest(self.manifest)
+            if self.manifest is not None
+            else self._read_image_roots(self.image_roots)
+        )
         if not self.records:
-            raise RuntimeError(f"No readable image records in {self.manifest}")
+            source = str(self.manifest) if self.manifest is not None else ", ".join(str(root) for root in self.image_roots)
+            raise RuntimeError(f"No readable image records in {source}")
 
     @staticmethod
     def _read_manifest(path: Path) -> list[tuple[Path, list[list[float]]]]:
@@ -64,6 +77,21 @@ class AppearanceDataset(IterableDataset[Re10KPairSample]):
                     boxes = [[float(v) for v in box[:4]] for box in raw if isinstance(box, list) and len(box) >= 4]
             if image.is_file():
                 records.append((image, boxes))
+        return records
+
+    @staticmethod
+    def _read_image_roots(roots: Sequence[Path]) -> list[tuple[Path, list[list[float]]]]:
+        """Recursively discover local appearance images without a manifest file."""
+        extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+        records: list[tuple[Path, list[list[float]]]] = []
+        for root in roots:
+            if not root.is_dir():
+                raise FileNotFoundError(f"Local image root does not exist: {root}")
+            records.extend(
+                (path, [])
+                for path in sorted(root.rglob("*"))
+                if path.is_file() and path.suffix.lower() in extensions
+            )
         return records
 
     def set_epoch(self, epoch: int) -> None:

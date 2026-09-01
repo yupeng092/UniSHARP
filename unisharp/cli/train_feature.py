@@ -535,6 +535,7 @@ def _deterministic_subset(items: list[Any], fraction: float, *, seed: int, label
 @click.option("--neuman-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--nerfies-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None)
 @click.option("--local-images-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None, help="Image-list or JSONL manifest for your local single-view photos.")
+@click.option("--local-images-root", type=click.Path(path_type=Path, exists=True, file_okay=False), multiple=True, help="Local single-view image directory. May be repeated; images are discovered recursively without a manifest.")
 @click.option("--local-multiview-manifest", type=click.Path(path_type=Path, exists=True, dir_okay=False), default=None, help="Calibrated JSONL manifest for your local multi-view photos.")
 @click.option("--dataset-manifest-dir", type=click.Path(path_type=Path, file_okay=False), default=None)
 @click.option("--out-root", type=click.Path(path_type=Path, file_okay=False), required=True)
@@ -679,6 +680,7 @@ def train_feature_cli(
     neuman_manifest: Path | None,
     nerfies_manifest: Path | None,
     local_images_manifest: Path | None,
+    local_images_root: tuple[Path, ...],
     local_multiview_manifest: Path | None,
     dataset_manifest_dir: Path | None,
     out_root: Path,
@@ -938,8 +940,10 @@ def train_feature_cli(
         raise ValueError("dataset_weight_neuman>0 but --neuman-manifest is missing.")
     if nerfies_enabled_for_train and nerfies_manifest is None:
         raise ValueError("dataset_weight_nerfies>0 but --nerfies-manifest is missing.")
-    if local_images_enabled_for_train and local_images_manifest is None:
-        raise ValueError("dataset_weight_local_images>0 but --local-images-manifest is missing.")
+    if local_images_enabled_for_train and local_images_manifest is None and not local_images_root:
+        raise ValueError("dataset_weight_local_images>0 but --local-images-root or --local-images-manifest is missing.")
+    if local_images_manifest is not None and local_images_root:
+        raise ValueError("Use either --local-images-root or --local-images-manifest, not both.")
     if local_multiview_enabled_for_train and local_multiview_manifest is None:
         raise ValueError("dataset_weight_local_multiview>0 but --local-multiview-manifest is missing.")
 
@@ -1175,7 +1179,7 @@ def train_feature_cli(
     local_images_ds = None
     if local_images_enabled_for_train:
         local_images_ds = AppearanceDataset(
-            local_images_manifest, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
+            local_images_manifest, image_roots=local_images_root, output_h=pinhole_output_h or 1024, output_w=pinhole_output_w or 1536,
             ddp_rank=rank, ddp_world_size=world_size, seed=dataset_seed + 73,
         )
     local_multiview_ds = None

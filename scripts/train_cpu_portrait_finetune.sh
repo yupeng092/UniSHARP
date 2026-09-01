@@ -10,7 +10,7 @@ export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/UniK3D:${PYTHONPATH:-}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-: "${DATASET_MANIFEST_DIR:?Set DATASET_MANIFEST_DIR (normally <repo>/dataset_manifests).}"
+DATASET_MANIFEST_DIR="${DATASET_MANIFEST_DIR:-${REPO_ROOT}/dataset_manifests}"
 FINETUNE_CHECKPOINT="${FINETUNE_CHECKPOINT:-${REPO_ROOT}/checkpoints/released/pretained_model.pt}"
 [[ -f "${FINETUNE_CHECKPOINT}" ]] || {
   echo "Official UniSHARP checkpoint was not found: ${FINETUNE_CHECKPOINT}" >&2
@@ -33,21 +33,17 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 PINHOLE_TRAIN_HEIGHT="${PINHOLE_TRAIN_HEIGHT:-256}"
 PINHOLE_TRAIN_WIDTH="${PINHOLE_TRAIN_WIDTH:-384}"
-PORTABLE_MAX_GAUSSIANS="${PORTABLE_MAX_GAUSSIANS:-16384}"
+MAX_GAUSSIANS="${MAX_GAUSSIANS:?Set MAX_GAUSSIANS to the explicit CPU portable-renderer Gaussian cap (for example 16384).}"
 PORTABLE_MAX_GAUSSIANS_PER_TILE="${PORTABLE_MAX_GAUSSIANS_PER_TILE:-96}"
 SAVE_EVERY="${SAVE_EVERY:-10}"
 
 LOCAL_IMAGES_ROOT="${LOCAL_IMAGES_ROOT:-}"
-LOCAL_IMAGES_MANIFEST="${LOCAL_IMAGES_MANIFEST:-${DATASET_MANIFEST_DIR}/local_images.txt}"
+LOCAL_IMAGES_MANIFEST="${LOCAL_IMAGES_MANIFEST:-}"
 LOCAL_IMAGES_WEIGHT="${LOCAL_IMAGES_WEIGHT:-0.0}"
 COCO_PERSON_MANIFEST="${COCO_PERSON_MANIFEST:-${DATASET_MANIFEST_DIR}/coco_person_train2017_boxes.jsonl}"
 COCO_PERSON_WEIGHT="${COCO_PERSON_WEIGHT:-0.0}"
 OPENIMAGES_PERSON_MANIFEST="${OPENIMAGES_PERSON_MANIFEST:-${DATASET_MANIFEST_DIR}/openimages_person_train_boxes.jsonl}"
 OPENIMAGES_PERSON_WEIGHT="${OPENIMAGES_PERSON_WEIGHT:-0.0}"
-
-if [[ ! -f "${LOCAL_IMAGES_MANIFEST}" && -n "${LOCAL_IMAGES_ROOT}" ]]; then
-  python "${SCRIPT_DIR}/prepare_local_images.py" --source-root "${LOCAL_IMAGES_ROOT}" --manifest "${LOCAL_IMAGES_MANIFEST}"
-fi
 
 DATASET_ARGS=()
 add_dataset() {
@@ -57,7 +53,14 @@ add_dataset() {
     DATASET_ARGS+=("${manifest_flag}" "${manifest}" "${weight_flag}" "${weight}")
   fi
 }
-add_dataset "${LOCAL_IMAGES_MANIFEST}" "${LOCAL_IMAGES_WEIGHT}" --local-images-manifest --dataset-weight-local-images "Local images"
+if [[ "${LOCAL_IMAGES_WEIGHT}" != "0" && "${LOCAL_IMAGES_WEIGHT}" != "0.0" ]]; then
+  if [[ -n "${LOCAL_IMAGES_ROOT}" ]]; then
+    [[ -d "${LOCAL_IMAGES_ROOT}" ]] || { echo "Local image directory was not found: ${LOCAL_IMAGES_ROOT}" >&2; exit 1; }
+    DATASET_ARGS+=(--local-images-root "${LOCAL_IMAGES_ROOT}" --dataset-weight-local-images "${LOCAL_IMAGES_WEIGHT}")
+  else
+    add_dataset "${LOCAL_IMAGES_MANIFEST}" "${LOCAL_IMAGES_WEIGHT}" --local-images-manifest --dataset-weight-local-images "Local images"
+  fi
+fi
 add_dataset "${COCO_PERSON_MANIFEST}" "${COCO_PERSON_WEIGHT}" --coco-person-manifest --dataset-weight-coco-person "COCO Person"
 add_dataset "${OPENIMAGES_PERSON_MANIFEST}" "${OPENIMAGES_PERSON_WEIGHT}" --openimages-person-manifest --dataset-weight-openimages-person "OpenImages Person"
 [[ "${#DATASET_ARGS[@]}" -gt 0 ]] || { echo "Enable at least one of LOCAL_IMAGES_WEIGHT, COCO_PERSON_WEIGHT, or OPENIMAGES_PERSON_WEIGHT." >&2; exit 1; }
@@ -66,7 +69,7 @@ add_dataset "${OPENIMAGES_PERSON_MANIFEST}" "${OPENIMAGES_PERSON_WEIGHT}" --open
 # generate only one quarter of the Gaussians at equal resolution.
 exec python -m unisharp.cli train-feature \
   --device cpu --renderer-backend portable \
-  --portable-renderer-max-gaussians "${PORTABLE_MAX_GAUSSIANS}" \
+  --portable-renderer-max-gaussians "${MAX_GAUSSIANS}" \
   --portable-renderer-max-gaussians-per-tile "${PORTABLE_MAX_GAUSSIANS_PER_TILE}" \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \
   --steps "${STEPS}" --batch-size "${BATCH_SIZE}" --num-workers "${NUM_WORKERS}" \

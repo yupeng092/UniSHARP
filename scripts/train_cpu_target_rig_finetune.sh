@@ -23,14 +23,16 @@ PINHOLE_TRAIN_HEIGHT="${PINHOLE_TRAIN_HEIGHT:-256}"
 PINHOLE_TRAIN_WIDTH="${PINHOLE_TRAIN_WIDTH:-384}"
 TARGET_RIG_EMBED_DIM="${TARGET_RIG_EMBED_DIM:-128}"
 TARGET_RIG_TRANSLATION_SCALE="${TARGET_RIG_TRANSLATION_SCALE:-1.0}"
+MAX_GAUSSIANS="${MAX_GAUSSIANS:?Set MAX_GAUSSIANS to the explicit CPU portable-renderer Gaussian cap (for example 16384).}"
+MAX_GAUSSIANS_PER_TILE="${MAX_GAUSSIANS_PER_TILE:-96}"
 
 exec python -m unisharp.cli train-feature \
   --device cpu --renderer-backend portable \
-  --portable-renderer-max-gaussians 16384 --portable-renderer-max-gaussians-per-tile 96 \
+  --portable-renderer-max-gaussians "${MAX_GAUSSIANS}" --portable-renderer-max-gaussians-per-tile "${MAX_GAUSSIANS_PER_TILE}" \
   --out-root "${OUT_ROOT}" --run-name "${RUN_NAME}" \
   --steps "${STEPS}" --batch-size 1 --num-workers "${NUM_WORKERS}" \
   --pinhole-train-height "${PINHOLE_TRAIN_HEIGHT}" --pinhole-train-width "${PINHOLE_TRAIN_WIDTH}" --train-resize-multiple 0 \
-  --unik3d-backbone vitl --initializer-stride 2 \
+  --unik3d-backbone vitl --initializer-stride 1 \
   --init-checkpoint "${INIT_CHECKPOINT}" --no-init-checkpoint-strict \
   --target-rig-conditioning --target-rig-embedding-dim "${TARGET_RIG_EMBED_DIM}" --target-rig-translation-scale "${TARGET_RIG_TRANSLATION_SCALE}" \
   --save-every "${STEPS}" --log-every 1 --vis-every 0 --lambda-percep 0 \

@@ -15,7 +15,11 @@ param(
     [int]$NumWorkers = 2,
     [int]$Height = 256,
     [int]$Width = 384,
-    [int]$PortableMaxGaussians = 16384,
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxGaussians,
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxGaussiansPerTile = 96,
+    [string[]]$LocalImagesRoot = @(),
     [double]$CocoPersonWeight = 0.0,
     [string]$CocoPersonManifest = "",
     [double]$OpenImagesPersonWeight = 0.0,
@@ -28,10 +32,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ([string]::IsNullOrWhiteSpace($DatasetManifestDir)) {
-    throw "Set -DatasetManifestDir or DATASET_MANIFEST_DIR."
+if (-not [string]::IsNullOrWhiteSpace($DatasetManifestDir)) {
+    $DatasetManifestDir = (Resolve-Path $DatasetManifestDir).Path
 }
-$DatasetManifestDir = (Resolve-Path $DatasetManifestDir).Path
 
 if ([string]::IsNullOrWhiteSpace($FineTuneCheckpoint)) {
     $FineTuneCheckpoint = Join-Path $repoRoot "checkpoints\released\pretained_model.pt"
@@ -45,16 +48,12 @@ if ([string]::IsNullOrWhiteSpace($OutRoot)) {
 if ([string]::IsNullOrWhiteSpace($RunName)) {
     $RunName = "unisharp_cpu_finetune_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 }
-if ([string]::IsNullOrWhiteSpace($CocoPersonManifest)) {
+if ([string]::IsNullOrWhiteSpace($CocoPersonManifest) -and -not [string]::IsNullOrWhiteSpace($DatasetManifestDir)) {
     $CocoPersonManifest = Join-Path $DatasetManifestDir "coco_person_train2017_boxes.jsonl"
 }
-if ([string]::IsNullOrWhiteSpace($OpenImagesPersonManifest)) {
+if ([string]::IsNullOrWhiteSpace($OpenImagesPersonManifest) -and -not [string]::IsNullOrWhiteSpace($DatasetManifestDir)) {
     $OpenImagesPersonManifest = Join-Path $DatasetManifestDir "openimages_person_train_boxes.jsonl"
 }
-if ([string]::IsNullOrWhiteSpace($LocalImagesManifest)) {
-    $LocalImagesManifest = Join-Path $DatasetManifestDir "local_images.txt"
-}
-
 $datasetArgs = @()
 function Add-WeightedDataset([double]$Weight, [string]$Manifest, [string]$ManifestFlag, [string]$WeightFlag, [string]$Label) {
     if ($Weight -gt 0.0) {
@@ -64,7 +63,19 @@ function Add-WeightedDataset([double]$Weight, [string]$Manifest, [string]$Manife
         $script:datasetArgs += @($ManifestFlag, $Manifest, $WeightFlag, "$Weight")
     }
 }
-Add-WeightedDataset $LocalImagesWeight $LocalImagesManifest "--local-images-manifest" "--dataset-weight-local-images" "Local images"
+if ($LocalImagesWeight -gt 0.0) {
+    if ($LocalImagesRoot.Count -gt 0) {
+        foreach ($root in $LocalImagesRoot) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Local image directory was not found: $root" }
+            $datasetArgs += @("--local-images-root", (Resolve-Path -LiteralPath $root).Path)
+        }
+        $datasetArgs += @("--dataset-weight-local-images", "$LocalImagesWeight")
+    } elseif (-not [string]::IsNullOrWhiteSpace($LocalImagesManifest)) {
+        Add-WeightedDataset $LocalImagesWeight $LocalImagesManifest "--local-images-manifest" "--dataset-weight-local-images" "Local images"
+    } else {
+        throw "Set -LocalImagesRoot for direct folder training (or -LocalImagesManifest for legacy manifests)."
+    }
+}
 Add-WeightedDataset $CocoPersonWeight $CocoPersonManifest "--coco-person-manifest" "--dataset-weight-coco-person" "COCO Person"
 Add-WeightedDataset $OpenImagesPersonWeight $OpenImagesPersonManifest "--openimages-person-manifest" "--dataset-weight-openimages-person" "OpenImages Person"
 if ($datasetArgs.Count -eq 0) {
@@ -77,8 +88,8 @@ $env:OMP_NUM_THREADS = "$Threads"
 $trainArgs = @(
     "-m", "unisharp.cli", "train-feature",
     "--device", "cpu", "--renderer-backend", "portable",
-    "--portable-renderer-max-gaussians", "$PortableMaxGaussians",
-    "--portable-renderer-max-gaussians-per-tile", "96",
+    "--portable-renderer-max-gaussians", "$MaxGaussians",
+    "--portable-renderer-max-gaussians-per-tile", "$MaxGaussiansPerTile",
     "--out-root", $OutRoot, "--run-name", $RunName,
     "--steps", "$Steps", "--batch-size", "1", "--num-workers", "$NumWorkers",
     "--pinhole-train-height", "$Height", "--pinhole-train-width", "$Width", "--train-resize-multiple", "0",
