@@ -1,0 +1,22 @@
+{
+  "source_image": "../dataset/20260831094111_73_2.jpg",
+  "render_report": "../outputs/XHS_data/dataset_20260831094111_73_2/torch_1536x1024_small10/multiview_report.json",
+  "camera_rig": "camera_rig_small10.json",
+  "output_gif": "../outputs/XHS_data/dataset_20260831094111_73_2/torch_1536x1024_small10/multiview.gif",
+  "output_manifest": "../outputs/XHS_data/dataset_20260831094111_73_2/torch_1536x1024_small10/multiview_gif.json",
+  "frame_duration_ms": 260,
+  "loop": 0,
+  "ping_pong": true,
+  "views": [
+    "left",
+    "upper_left",
+    "up",
+    "upper_right",
+    "right",
+    "lower_right",
+    "down",
+    "lower_left",
+    "back",
+    "forward"
+  ]
+}

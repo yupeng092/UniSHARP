@@ -1,0 +1,14 @@
+{
+  "cameras": [
+    {"name": "left", "position_xyz": [-0.30, 0.0, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "right", "position_xyz": [0.30, 0.0, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "up", "position_xyz": [0.0, -0.22, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "down", "position_xyz": [0.0, 0.22, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "upper_left", "position_xyz": [-0.22, -0.16, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "upper_right", "position_xyz": [0.22, -0.16, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "lower_left", "position_xyz": [-0.22, 0.16, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "lower_right", "position_xyz": [0.22, 0.16, 0.0], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "forward", "position_xyz": [0.0, 0.0, 0.25], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false},
+    {"name": "back", "position_xyz": [0.0, 0.0, -0.25], "look_at_xyz": null, "roll_deg": 0.0, "source_camera": false}
+  ]
+}

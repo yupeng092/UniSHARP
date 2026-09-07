@@ -682,6 +682,85 @@ python scripts/render_unisharp_cpu.py \
   --linear-to-srgb
 ```
 
+### Windows CPU workflow: inference, named cameras, and GIF export
+
+The following PowerShell workflow is a complete, CPU-only example for a local
+image. Run it from the repository root. It first predicts the 3D Gaussians,
+then renders a conservative ten-camera rig with the gsplat-classic PyTorch
+reference renderer, and finally encodes the rendered RGB images as a GIF.
+
+```powershell
+# 1. Infer a Gaussian scene from one image.
+python scripts\infer_unisharp_cpu.py `
+  --checkpoint checkpoints\released\pretained_model.pt `
+  --image dataset\20260831094111_73_2.jpg `
+  --out-dir outputs\XHS_data `
+  --max-long-edge 768 `
+  --threads 8
+
+# 2. Render the named small-baseline rig at 1536 x 1024 (width x height).
+python scripts\render_unisharp_cpu.py `
+  --gaussians outputs\XHS_data\dataset_20260831094111_73_2\gaussians.pt `
+  --output outputs\XHS_data\dataset_20260831094111_73_2\torch_1536x1024_small10 `
+  --trajectory rig `
+  --camera-file configs\camera_rig_small10.json `
+  --camera-orientation look_at `
+  --backend torch `
+  --height 1024 `
+  --width 1536 `
+  --threads 8 `
+  --no-save-gaussians
+
+# 3. Encode rgb/*.png using the render report as the source of frame paths.
+python scripts\make_multiview_gif.py `
+  --config configs\multiview_gif_demo_20260831094111_73_2.json
+```
+
+Step 1 writes
+`outputs/XHS_data/dataset_20260831094111_73_2/gaussians.pt`; this is the sole
+input needed by the standalone renderer. Step 2 writes named RGB, alpha and
+depth images under `rgb/`, `alpha/` and `depth/`, a contact sheet
+`comparison_grid.png`, and `multiview_report.json`. The GIF script reads the
+`rgb` locations and camera order from that report, writes `multiview.gif`, and
+creates `multiview_gif.json` with the source image, render settings, selected
+views, encoded sequence and SHA-256 checksums.
+
+#### Rendered ten-view demo
+
+The following animation was generated from
+`dataset/20260831094111_73_2.jpg` using the demo configuration above. It is a
+1536 x 1024 CPU render with ten named small-baseline views and a ping-pong
+playback sequence.
+
+<p align="center">
+  <img src="docs/assets/multiview_demo_20260831094111_73_2.gif" width="768" alt="UniSHARP ten-view CPU rendering demo">
+</p>
+
+`configs/camera_rig_small10.json` is a reusable custom-rig file. Its
+`position_xyz` values are camera-centre offsets in source-camera coordinates;
+the small 0.16--0.30 scene-unit offsets deliberately favour stable local
+parallax over dramatic but poorly observed viewpoint changes. To use a built-in
+five-view rig instead, omit `--camera-file` and use, for example,
+`--rig cross5 --baseline 0.30 --vertical-baseline 0.22`.
+
+Do **not** pass inference `metadata.json` to `--camera-file`: it describes the
+predicted Gaussian scene and does not have the required `{"cameras": [...]}`
+schema. `--camera-file` must point to a rig file such as
+`configs/camera_rig_small10.json`.
+
+For a different render, create a GIF without the demo config by giving the
+render report and destination directly:
+
+```powershell
+python scripts\make_multiview_gif.py `
+  --render-report outputs\my_render\multiview_report.json `
+  --source-image dataset\my_image.jpg `
+  --camera-rig configs\camera_rig_small10.json `
+  --output outputs\my_render\multiview.gif `
+  --duration-ms 260 `
+  --ping-pong
+```
+
 
 If calibrated camera parameters are available, pass them through a JSON file. Without this file, the script predicts rays with UniK3D and fits the camera parameters automatically.
 
