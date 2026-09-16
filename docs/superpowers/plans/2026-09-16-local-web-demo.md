@@ -43,6 +43,7 @@ scripts/
 - Create: `web_demo/__init__.py`
 - Create: `web_demo/config.py`
 - Create: `tests/conftest.py`
+- Create: `tests/test_app.py`
 
 - [ ] **Step 1: Write the failing application-factory test**
 
@@ -66,7 +67,11 @@ def app(tmp_path: Path):
 @pytest.fixture()
 def client(app):
     return app.test_client()
+```
 
+Create `tests/test_app.py` with:
+
+```python
 def test_factory_defaults_to_loopback_host(app):
     assert app.config["BIND_HOST"] == "127.0.0.1"
     assert app.config["JOB_ROOT"].name == "jobs"
@@ -74,7 +79,7 @@ def test_factory_defaults_to_loopback_host(app):
 
 - [ ] **Step 2: Verify that the test fails because `web_demo` is missing**
 
-Run: `python -m pytest tests/conftest.py -q`
+Run: `python -m pytest tests/test_app.py -q`
 
 Expected: import failure for `web_demo`.
 
@@ -110,14 +115,14 @@ blueprint. Do not read Python/checkpoint/rig paths from the request.
 
 - [ ] **Step 4: Verify the factory test passes**
 
-Run: `python -m pytest tests/conftest.py -q`
+Run: `python -m pytest tests/test_app.py -q`
 
 Expected: `1 passed`.
 
 - [ ] **Step 5: Commit the tested foundation**
 
 ```powershell
-git add requirements.txt web_demo/__init__.py web_demo/config.py tests/conftest.py
+git add requirements.txt web_demo/__init__.py web_demo/config.py tests/conftest.py tests/test_app.py
 git commit -m "Add web demo application factory"
 ```
 
