@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UniSHARP Local View Demo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script defer src="{{ url_for('static', filename='upload.js') }}"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">UNISHARP · LOCAL DEMO</p>
+      <h1>Explore a photo<br>from new viewpoints.</h1>
+      <p class="lede">Upload one image. UniSHARP reconstructs a Gaussian scene and renders ten nearby camera views for you to browse.</p>
+    </header>
+    <section class="upload-card" aria-labelledby="upload-title">
+      <h2 id="upload-title">Start a render</h2>
+      <form id="upload-form" novalidate>
+        <label class="drop-zone" id="drop-zone" for="image">
+          <input id="image" name="image" type="file" accept="image/jpeg,image/png,image/webp" required>
+          <span class="drop-icon" aria-hidden="true">↥</span>
+          <strong>Drop an image here</strong>
+          <span>or choose a JPG, PNG, or WebP file</span>
+          <small id="selected-file">Maximum upload size: 15 MB</small>
+        </label>
+        <p class="form-error" id="upload-error" role="alert" hidden></p>
+        <button class="primary-button" id="submit-button" type="submit">Generate views <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="local-note">Runs only on this computer. CPU rendering is queued and may take several minutes.</p>
+    </section>
+  </main>
+</body>
+</html>

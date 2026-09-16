@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UniSHARP Render</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script defer src="{{ url_for('static', filename='view_navigator.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='job.js') }}"></script>
+</head>
+<body data-job-id="{{ job_id }}">
+  <main class="shell result-shell">
+    <a class="back-link" href="{{ url_for('web_demo.index') }}">← New image</a>
+    <header class="result-header">
+      <p class="eyebrow">UNISHARP · VIEW EXPLORER</p>
+      <h1>Your rendered viewpoints</h1>
+      <p id="job-status" class="status" role="status">Preparing render job…</p>
+    </header>
+    <section id="result-panel" hidden>
+      <div class="viewer-wrap">
+        <div id="view-navigator" class="view-navigator" data-current-view="" tabindex="0" aria-label="Drag to browse rendered viewpoints">
+          <img id="main-view" alt="Rendered novel view">
+          <div class="drag-hint">Drag to browse views</div>
+        </div>
+        <p id="view-label" class="view-label" aria-live="polite"></p>
+      </div>
+      <div class="thumb-bar" id="thumbnail-bar" aria-label="Rendered viewpoints"></div>
+      <div class="result-actions">
+        <a id="download-gif" class="secondary-button" download>Download GIF</a>
+        <a id="source-image" class="text-link" target="_blank" rel="noopener">Open source image</a>
+      </div>
+    </section>
+    <section id="failure-panel" class="failure-panel" hidden>
+      <h2>Render could not finish</h2>
+      <p id="failure-message"></p>
+      <a class="primary-button" href="{{ url_for('web_demo.index') }}">Try another image</a>
+    </section>
+  </main>
+</body>
+</html>

@@ -52,6 +52,12 @@ def _allowed_files(job: dict[str, Any]) -> set[str]:
     return allowed
 
 
+@bp.get("/")
+def index():
+    """Serve the local image-upload entry point."""
+    return render_template("index.html")
+
+
 @bp.post("/api/jobs")
 def create_job():
     """Validate one multipart image then queue its CPU rendering work."""
