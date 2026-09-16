@@ -1,5 +1,6 @@
 from io import BytesIO
 
+import pytest
 from PIL import Image
 
 
@@ -46,3 +47,11 @@ def test_job_page_contains_status_and_navigator_shell(client, app):
     assert response.status_code == 200
     assert b'id="job-status"' in response.data
     assert b'id="view-navigator"' in response.data
+
+
+def test_loopback_is_default_and_non_loopback_requires_explicit_flag():
+    from scripts.run_web_demo import parse_args
+
+    assert parse_args([]).host == "127.0.0.1"
+    with pytest.raises(SystemExit):
+        parse_args(["--host", "0.0.0.0"])

@@ -716,6 +716,38 @@ python scripts\make_multiview_gif.py `
   --config configs\multiview_gif_demo_20260831094111_73_2.json
 ```
 
+### Local interactive browser demo
+
+The local demo accepts one uploaded JPG, PNG, or WebP image, runs the same CPU
+inference and conservative ten-camera render workflow, then lets you select a
+thumbnail or drag the main image between the rendered left/right/up/down and
+diagonal views. Dragging selects an existing render; it does not synthesize a
+continuous unseen view in the browser.
+
+Install the extra web dependency once, then start the service from the project
+root:
+
+```powershell
+python -m pip install -r requirements.txt
+python scripts\run_web_demo.py
+```
+
+Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. The server
+listens only on this computer by default. Uploaded jobs run one at a time and
+write their source image, inference export, RGB views, render report, GIF, and
+status JSON under `outputs/web_demo/<job-id>/`.
+
+The default render output is 768 x 512. CPU inference and the ten CPU reference
+renders can take several minutes, depending on the scene and hardware; keep
+the browser tab open while its status changes from queued to inference and
+rendering. A failed job retains local diagnostic files but returns only a short
+error message to the browser.
+
+This is a local demonstration service, not a public deployment. Do not expose
+it to the Internet without putting authentication, HTTPS, upload-rate limits,
+and a suitable GPU worker/queue architecture in front of it. Binding a
+non-loopback host requires the explicit `--allow-network` flag.
+
 Step 1 writes
 `outputs/XHS_data/dataset_20260831094111_73_2/gaussians.pt`; this is the sole
 input needed by the standalone renderer. Step 2 writes named RGB, alpha and
