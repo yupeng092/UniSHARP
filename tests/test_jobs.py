@@ -1,5 +1,7 @@
 from io import BytesIO
 from pathlib import Path
+import subprocess
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
@@ -47,3 +49,46 @@ def test_view_manifest_uses_report_camera_names_and_rgb_paths(app):
     manager = JobManager(app.config)
     report = {"cameras": [{"name": "left", "rgb": "rgb/00_left.png"}]}
     assert manager.views_from_report(report) == [{"name": "left", "file": "rgb/00_left.png"}]
+
+
+def test_worker_runs_inference_render_and_gif_in_order(app):
+    manager = JobManager(app.config, start_worker=False)
+    job = manager.create_job("scene.png", BytesIO(png_bytes()))
+    report = app.config["JOB_ROOT"] / job["id"] / "render" / "multiview_report.json"
+
+    def completed(command, **_):
+        script = Path(command[1]).name
+        if script == "infer_unisharp_cpu.py":
+            gaussian = app.config["JOB_ROOT"] / job["id"] / "inference" / "upload_scene" / "gaussians.pt"
+            gaussian.parent.mkdir(parents=True, exist_ok=True)
+            gaussian.write_bytes(b"gaussians")
+        if script == "render_unisharp_cpu.py":
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text('{"cameras":[{"name":"left","rgb":"rgb/00_left.png"}]}', encoding="utf-8")
+            (report.parent / "rgb").mkdir(exist_ok=True)
+            (report.parent / "rgb" / "00_left.png").write_bytes(png_bytes())
+        if script == "make_multiview_gif.py":
+            (report.parent / "multiview.gif").write_bytes(b"GIF89a")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    with patch("web_demo.jobs.subprocess.run", side_effect=completed) as run:
+        manager.run_job(job["id"])
+
+    assert [Path(call.args[0][1]).name for call in run.call_args_list] == [
+        "infer_unisharp_cpu.py",
+        "render_unisharp_cpu.py",
+        "make_multiview_gif.py",
+    ]
+    assert manager.get_job(job["id"])["phase"] == "complete"
+
+
+def test_worker_records_bounded_failure_without_absolute_path(app):
+    manager = JobManager(app.config, start_worker=False)
+    job = manager.create_job("scene.png", BytesIO(png_bytes()))
+    failure = subprocess.CalledProcessError(1, ["infer"], stderr="bad checkpoint at C:\\private\\path")
+    with patch("web_demo.jobs.subprocess.run", side_effect=failure):
+        manager.run_job(job["id"])
+    result = manager.get_job(job["id"])
+    assert result["phase"] == "failed"
+    assert "inference failed" in result["error"]
+    assert "C:\\private" not in result["error"]

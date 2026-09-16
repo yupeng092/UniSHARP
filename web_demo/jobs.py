@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
+import subprocess
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -31,10 +34,23 @@ class UploadValidationError(ValueError):
 class JobManager:
     """Persist browser jobs below one configured root without path escape."""
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], *, start_worker: bool = True) -> None:
         self.root = Path(config["JOB_ROOT"]).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_upload_bytes = int(config["MAX_UPLOAD_BYTES"])
+        self.repo_root = Path(config["REPO_ROOT"]).resolve()
+        self.python = Path(config["PYTHON_EXECUTABLE"])
+        self.checkpoint = Path(config["CHECKPOINT_PATH"])
+        self.camera_rig = Path(config["CAMERA_RIG_PATH"])
+        self.max_long_edge = int(config["MAX_LONG_EDGE"])
+        self.render_width = int(config["RENDER_WIDTH"])
+        self.render_height = int(config["RENDER_HEIGHT"])
+        self.threads = int(config["THREADS"])
+        self._queue: queue.Queue[str] = queue.Queue()
+        self._worker: threading.Thread | None = None
+        if start_worker:
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="unisharp-web-demo")
+            self._worker.start()
 
     def create_job(self, original_name: str, stream: BinaryIO) -> dict[str, Any]:
         """Validate and store an uploaded image in a newly created job directory."""
@@ -102,6 +118,90 @@ class JobManager:
         job["error"] = error if phase == "failed" else None
         self._write_job(self._job_dir(job_id), job)
         return job
+
+    def enqueue(self, job_id: str) -> None:
+        """Place one validated queued job behind any currently running job."""
+        if self.get_job(job_id)["phase"] != "queued":
+            raise ValueError("only queued jobs can be enqueued")
+        self._queue.put(job_id)
+
+    def run_job(self, job_id: str) -> None:
+        """Run inference, rig render, and GIF creation in a single worker."""
+        job_dir = self._job_dir(job_id)
+        upload = self.safe_job_file(job_id, self.get_job(job_id)["upload_relative_path"])
+        inference_root = job_dir / "inference"
+        render_root = job_dir / "render"
+        try:
+            self.set_phase(job_id, "inference")
+            self._run("inference", [
+                self.python, self.repo_root / "scripts" / "infer_unisharp_cpu.py",
+                "--checkpoint", self.checkpoint,
+                "--image", upload,
+                "--out-dir", inference_root,
+                "--max-long-edge", str(self.max_long_edge),
+                "--threads", str(self.threads),
+            ])
+            gaussian_paths = list(inference_root.glob("*/gaussians.pt"))
+            if len(gaussian_paths) != 1:
+                raise RuntimeError("inference did not produce exactly one Gaussian export")
+
+            self.set_phase(job_id, "rendering")
+            self._run("rendering", [
+                self.python, self.repo_root / "scripts" / "render_unisharp_cpu.py",
+                "--gaussians", gaussian_paths[0], "--output", render_root,
+                "--trajectory", "rig", "--camera-file", self.camera_rig,
+                "--camera-orientation", "look_at", "--backend", "torch",
+                "--height", str(self.render_height), "--width", str(self.render_width),
+                "--threads", str(self.threads), "--no-save-gaussians",
+            ])
+            report_path = render_root / "multiview_report.json"
+            report = self._read_report(report_path)
+            views = self.views_from_report(report)
+            for view in views:
+                if not self.safe_job_file(job_id, f"render/{view['file']}").is_file():
+                    raise RuntimeError("renderer did not produce every RGB view")
+
+            gif_path = render_root / "multiview.gif"
+            self._run("GIF encoding", [
+                self.python, self.repo_root / "scripts" / "make_multiview_gif.py",
+                "--render-report", report_path, "--source-image", upload,
+                "--camera-rig", self.camera_rig, "--output", gif_path, "--ping-pong",
+            ])
+            if not gif_path.is_file():
+                raise RuntimeError("GIF encoder did not produce an animation")
+            job = self.get_job(job_id)
+            job.update({
+                "phase": "complete", "updated_at": self._timestamp(), "error": None,
+                "result": {"views": views, "gif": "render/multiview.gif", "source": job["upload_relative_path"]},
+            })
+            self._write_job(job_dir, job)
+        except subprocess.CalledProcessError as exc:
+            self._fail_if_active(job_id, f"{self.get_job(job_id)['phase']} failed (exit code {exc.returncode})")
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+            self._fail_if_active(job_id, "rendering job failed; inspect local job files for details")
+
+    def _worker_loop(self) -> None:
+        while True:
+            self.run_job(self._queue.get())
+            self._queue.task_done()
+
+    def _run(self, stage: str, command: list[str | Path]) -> None:
+        subprocess.run(
+            [str(value) for value in command], cwd=self.repo_root, check=True,
+            capture_output=True, text=True,
+        )
+
+    @staticmethod
+    def _read_report(path: Path) -> dict[str, Any]:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("render report is not an object")
+        return value
+
+    def _fail_if_active(self, job_id: str, message: str) -> None:
+        job = self.get_job(job_id)
+        if job["phase"] not in {"complete", "failed"}:
+            self.set_phase(job_id, "failed", error=message[:240])
 
     def views_from_report(self, report: dict[str, Any]) -> list[dict[str, str]]:
         """Convert a renderer report into relative, browser-safe view records."""
