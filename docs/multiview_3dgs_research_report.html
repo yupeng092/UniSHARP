@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>多视角 3DGS 技术调研报告</title>
+  <style>
+    :root { --ink:#162033; --muted:#637087; --line:#dce3ed; --soft:#f5f8fc; --blue:#2457d6; --cyan:#087f8c; --orange:#ca6818; --red:#ad3d4d; --green:#247356; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#edf2f8; color:var(--ink); font-family:"Microsoft YaHei","Noto Sans SC",Arial,sans-serif; line-height:1.7; }
+    main { width:min(1160px, calc(100% - 32px)); margin:32px auto 56px; background:#fff; box-shadow:0 10px 35px rgba(31,51,81,.12); border-radius:18px; overflow:hidden; }
+    header { padding:56px 64px 46px; background:linear-gradient(125deg,#102b67,#2457d6 55%,#13869a); color:#fff; }
+    h1 { margin:0; font-size:clamp(30px,4vw,48px); letter-spacing:.02em; line-height:1.2; }
+    .subtitle { max-width:800px; margin:16px 0 0; font-size:17px; opacity:.91; }
+    .meta { margin-top:28px; font-size:13px; opacity:.78; }
+    article { padding:42px 64px 64px; }
+    h2 { margin:48px 0 18px; padding-left:13px; border-left:5px solid var(--blue); font-size:26px; line-height:1.25; }
+    h3 { margin:30px 0 12px; font-size:19px; }
+    p { margin:10px 0; }
+    a { color:var(--blue); text-decoration:none; border-bottom:1px solid #a8bdeb; }
+    a:hover { color:#123aab; }
+    .lead { font-size:18px; color:#354258; }
+    .callout { margin:22px 0; padding:19px 21px; background:#eef5ff; border:1px solid #cbdcf8; border-radius:10px; }
+    .callout strong { color:#123d9e; }
+    .warning { background:#fff6ed; border-color:#f1d1ae; }
+    .warning strong { color:#9c4d10; }
+    .flow { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; align-items:stretch; margin:28px 0; }
+    .node { position:relative; padding:15px 12px; min-height:105px; border-radius:11px; color:#fff; font-weight:700; font-size:14px; display:flex; align-items:center; justify-content:center; text-align:center; background:var(--blue); }
+    .node:nth-child(2) { background:#087f8c; } .node:nth-child(3) { background:#5a5ebd; } .node:nth-child(4) { background:#247356; } .node:nth-child(5) { background:#183d8a; }
+    .node:not(:last-child)::after { content:"→"; position:absolute; right:-16px; z-index:2; color:#6f7d90; font-size:22px; font-weight:400; }
+    table { width:100%; border-collapse:collapse; margin:18px 0 28px; font-size:14px; }
+    th, td { padding:13px 12px; text-align:left; vertical-align:top; border:1px solid var(--line); }
+    th { background:#edf3fc; color:#203555; }
+    tr:nth-child(even) td { background:#fbfcfe; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; }
+    .tag.good { color:#176248; background:#ddf3e9; } .tag.mid { color:#945114; background:#fff0dc; } .tag.low { color:#993a48; background:#fde7ea; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .card { padding:20px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+    .card h3 { margin-top:0; }
+    .formula { margin:18px 0; padding:16px 18px; border-radius:10px; background:#17233a; color:#e9f0ff; overflow:auto; font-family:Consolas,"SFMono-Regular",monospace; font-size:14px; }
+    ul, ol { padding-left:24px; } li { margin:7px 0; }
+    .small { color:var(--muted); font-size:13px; }
+    .source-list { padding-left:20px; } .source-list li { margin:10px 0; }
+    footer { margin-top:45px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    @media (max-width:760px) { main { width:100%; margin:0; border-radius:0; } header,article { padding:32px 22px; } .flow,.grid2 { grid-template-columns:1fr; } .node:not(:last-child)::after { content:"↓"; right:auto; bottom:-20px; } table { display:block; overflow-x:auto; white-space:normal; } }
+    @media print { body { background:#fff; } main { width:100%; margin:0; box-shadow:none; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>多视角 3D Gaussian Splatting<br>技术调研报告</h1>
+    <p class="subtitle">面向单图/稀疏视图输入、大机位移动、新区域补全、以及端侧实时渲染的技术路线与落地建议。</p>
+    <p class="meta">调研日期：2026-08-28　|　适用项目：UniSHARP target-rig 微调与多机位 3DGS 渲染</p>
+  </header>
+
+  <article>
+    <h2>1. 执行摘要</h2>
+    <p class="lead">3DGS 的优势是把已经获得的场景表示成可实时光栅化的 Gaussian；它并不能从单张图像中恢复被遮挡或画外的真实内容。对于“大幅移动机位”问题，核心不是替换渲染算法，而是为未观测区域补充多视角约束。</p>
+    <div class="callout">
+      <strong>推荐结论：</strong>保留 UniSHARP 作为原图的几何/3DGS 初始化器；在离线或较重的推理阶段，按目标活动范围生成一组虚拟新视图，进行置信度筛选和联合 3DGS 优化；最终将压缩后的 3DGS 下发到端侧，只做实时渲染。该路线把“生成”与“实时交互”解耦。
+    </div>
+    <div class="warning">
+      <strong>真实性边界：</strong>单图没有观测到的背面、遮挡区和画外区域无法被严格重构。多视角生成可以提高视觉完整度与跨视图一致性，但生成区域仍属于受先验约束的合理补全，不应被当作真实测量结果。
+    </div>
+
+    <h2>2. 问题拆解</h2>
+    <table>
+      <thead><tr><th>问题</th><th>根因</th><th>仅改渲染器是否能解决</th><th>需要补充的能力</th></tr></thead>
+      <tbody>
+        <tr><td>原图可见区域在新机位也变差</td><td>深度、尺度、外参或 Gaussian 参数误差被放大</td><td>部分可以：改善 rasterizer、抗锯齿与正则化</td><td>几何校正、重投影一致性、联合优化</td></tr>
+        <tr><td>大平移后出现洞、拉丝、漂浮物</td><td>遮挡解除后没有真实几何与纹理</td><td>不能</td><td>新观测或生成的多视角监督</td></tr>
+        <tr><td>背面/画外内容缺失</td><td>单图信息论上的不可辨识性</td><td>不能</td><td>真实多帧、视频、深度传感器，或生成式先验</td></tr>
+        <tr><td>端侧实时浏览</td><td>渲染负载与模型推理负载混在一起</td><td>仅渲染可做到</td><td>离线生成/优化、压缩与端侧 fused rasterizer</td></tr>
+      </tbody>
+    </table>
+
+    <h2>3. 多视角 3DGS 技术路线</h2>
+    <table>
+      <thead><tr><th>路线</th><th>代表工作</th><th>输入</th><th>核心思想</th><th>适合大机位移动</th><th>端侧定位</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>逐场景优化式 3DGS</td>
+          <td><a href="#s1">3DGS</a></td>
+          <td>多张真实、已标定图片</td>
+          <td>从 SfM 稀疏点初始化，高斯参数与密度控制交替优化，基于可见性排序光栅化。</td>
+          <td><span class="tag good">真实采集时最佳</span></td>
+          <td>训练/优化重；渲染适合端侧</td>
+        </tr>
+        <tr>
+          <td>前馈式稀疏多视图 GS</td>
+          <td><a href="#s2">pixelSplat</a>、<a href="#s3">MVSplat</a></td>
+          <td>2–数张已标定图</td>
+          <td>从多视图特征和匹配/代价体直接预测 Gaussian，省去每场景长时间优化。</td>
+          <td><span class="tag good">有真实稀疏视图</span></td>
+          <td>前馈在服务端/高端设备；结果可端渲染</td>
+        </tr>
+        <tr>
+          <td>无位姿稀疏视图 GS</td>
+          <td><a href="#s4">FreeSplatter</a></td>
+          <td>多张未标定图片</td>
+          <td>同时恢复相机参数和 Gaussian 场景表示，减少采集端标定要求。</td>
+          <td><span class="tag mid">依赖多张图</span></td>
+          <td>适合简化采集，不是单图真实性方案</td>
+        </tr>
+        <tr>
+          <td>生成式多视图补全 → 重建</td>
+          <td><a href="#s5">CAT3D</a>、<a href="#s6">Zero-1-to-3</a></td>
+          <td>单图或少图 + 目标相机</td>
+          <td>使用相机条件扩散模型合成一组一致的新视图，再交给 3D 重建/3DGS。</td>
+          <td><span class="tag good">单图时最实用</span></td>
+          <td>生成较重；3DGS 可端渲染</td>
+        </tr>
+        <tr>
+          <td>在线 GS-SLAM / 视频建图</td>
+          <td><a href="#s7">Gaussian Splatting SLAM</a></td>
+          <td>视频或 RGB-D 流</td>
+          <td>在线位姿跟踪与 Gaussian 地图更新，以不断增加的真实观测消除盲区。</td>
+          <td><span class="tag good">真实场景最佳</span></td>
+          <td>采集/更新重；浏览阶段可实时</td>
+        </tr>
+        <tr>
+          <td>压缩与 LOD</td>
+          <td><a href="#s8">LightGaussian</a></td>
+          <td>已训练 3DGS</td>
+          <td>重要性裁剪、SH 降阶、量化与恢复，降低存储和 rasterization 负载。</td>
+          <td><span class="tag low">不增加信息</span></td>
+          <td><span class="tag good">端侧关键</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>4. 关键论文与算法要点</h2>
+    <div class="grid2">
+      <section class="card">
+        <h3>优化式 3DGS</h3>
+        <p>原始 3DGS 将场景表示为带位置、各向异性协方差、透明度和颜色/球谐系数的 3D Gaussian。可见 Gaussian 按深度排序后进行 alpha compositing；训练时优化高斯参数并进行密度控制。</p>
+        <p class="small">适合真实多帧重建；实时性指完成建图后的渲染，不代表单图重建或训练实时。</p>
+      </section>
+      <section class="card">
+        <h3>pixelSplat / MVSplat</h3>
+        <p>两者代表“从多视图直接预测 splat”的前馈路线。pixelSplat 面向图像对的可泛化重建；MVSplat 显式利用稀疏多视图匹配/几何线索，强调从少量已标定视图高效输出可渲染 3DGS。</p>
+        <p class="small">它们要求至少两张真实、相互重叠的视图；对于只有单图的不可见区域，仍需生成先验或补采数据。</p>
+      </section>
+      <section class="card">
+        <h3>CAT3D / 相机条件生成</h3>
+        <p>先指定目标相机集合，再用多视图扩散模型生成彼此尽量一致的视图，随后用传统或学习式 3D 重建生成可实时浏览的表示。它直接针对“少图不足以覆盖场景”的缺口。</p>
+        <p class="small">适合视觉完整性；必须把原图权重设为最高，避免生成内容反向破坏已观测区域。</p>
+      </section>
+      <section class="card">
+        <h3>FreeSplatter / pose-free</h3>
+        <p>在多张输入未标定时，同时预测位姿和 3DGS，可减少对 COLMAP 或外参采集的依赖。它解决的是“稀疏多图没有位姿”的工程问题，不等同于从单图获得真实背面。</p>
+        <p class="small">若后续能采集 3–8 张手机图片，该路线比强行只用一张图更稳妥。</p>
+      </section>
+    </div>
+
+    <h2>5. 面向 UniSHARP 的推荐方案</h2>
+    <div class="flow" aria-label="推荐处理流程">
+      <div class="node">原图 + 标定内参<br>UniSHARP 初始化</div>
+      <div class="node">定义可活动<br>目标相机范围</div>
+      <div class="node">多视角生成<br>补全虚拟视图</div>
+      <div class="node">一致性筛选<br>联合优化 3DGS</div>
+      <div class="node">压缩资产<br>端侧实时渲染</div>
+    </div>
+
+    <h3>5.1 推理/优化流程</h3>
+    <ol>
+      <li><strong>初始化：</strong>以原图运行 UniSHARP，得到深度、初始 Gaussian 和原图相机。</li>
+      <li><strong>机位设计：</strong>将用户允许的移动范围离散为代表相机，例如左右平移、俯仰和后退方向。不要只给单个最终机位，应覆盖整个可浏览空间。</li>
+      <li><strong>多视图补全：</strong>使用相机条件的多视图生成模型输出虚拟图像；原图不做像素改写，扩图/生成只服务于原图外的待补区域。</li>
+      <li><strong>可靠性估计：</strong>通过跨视图重投影误差、生成模型不确定性、深度一致性和遮挡可见性建立每像素置信度。低置信度区域不参与或弱参与监督。</li>
+      <li><strong>联合 3DGS 优化：</strong>原图使用强监督；虚拟视图只以置信度加权的颜色、深度和跨视图一致性约束更新 Gaussian。</li>
+      <li><strong>资产化：</strong>裁剪低重要度 Gaussian、量化属性、构建多级 LOD；终端只执行相机变换、排序和 splatting。</li>
+    </ol>
+
+    <div class="formula">L = L<sub>observed</sub> + λ<sub>syn</sub> · Σ<sub>v</sub> w<sub>v</sub> L<sub>synthetic,v</sub>
+  + λ<sub>reproj</sub> L<sub>multi-view</sub> + λ<sub>depth</sub> L<sub>depth</sub> + λ<sub>reg</sub> L<sub>regularization</sub>
+
+w<sub>v</sub> = visibility · confidence · consistency</div>
+
+    <p>这里 <code>L<sub>observed</sub></code> 必须优先保护原图可见区域；<code>w<sub>v</sub></code> 使不一致或疑似幻觉的生成内容对优化影响较小。target-rig 微调可作为该流程的先验：它让 decoder 感知“需要覆盖的相机集合”，但不能代替虚拟视图生成或真实观测。</p>
+
+    <h2>6. 路线选择建议</h2>
+    <table>
+      <thead><tr><th>约束</th><th>推荐路线</th><th>预期效果</th><th>不推荐的做法</th></tr></thead>
+      <tbody>
+        <tr><td>只有单张图，允许合理补全</td><td>UniSHARP 初始化 + CAT3D/相机条件多视图生成 + 置信度联合优化</td><td>提高中/大位姿变化下的视觉完整性</td><td>只移动渲染相机，或仅裁剪原图</td></tr>
+        <tr><td>可多拍 3–8 张，已知相机</td><td>MVSplat/pixelSplat 或直接优化式 3DGS</td><td>真实几何与纹理一致性明显更好</td><td>把真实多图丢掉后仅做单图生成</td></tr>
+        <tr><td>可多拍但没有位姿</td><td>FreeSplatter 或 SfM/SLAM 估计位姿后 3DGS</td><td>降低标定门槛</td><td>假定未标定图天然对齐</td></tr>
+        <tr><td>可以采集短视频/RGB-D</td><td>GS-SLAM 或视频 SfM + 3DGS</td><td>最接近真实完整场景</td><td>用生成图替代已可获取的真实帧</td></tr>
+        <tr><td>端侧低功耗交互</td><td>服务器/高算力端建图，LightGaussian 类压缩 + native/fused renderer 下发</td><td>实时浏览、较低带宽与内存</td><td>在端侧运行大扩散模型并同步优化 3DGS</td></tr>
+      </tbody>
+    </table>
+
+    <h2>7. 工程实验计划</h2>
+    <ol>
+      <li><strong>建立基线：</strong>固定原图、相机轨迹和渲染分辨率，比较现有 UniSHARP 在小、中、大平移下的 PSNR/SSIM/LPIPS，以及洞面积、漂浮 Gaussian 比例和人工评分。</li>
+      <li><strong>验证 target-rig：</strong>用真实多视图标定数据微调，验证在训练分布内的机位范围是否减少失真；这一步检验“相机条件”本身的增益。</li>
+      <li><strong>加入虚拟视图：</strong>只在原图不可见或低覆盖区域使用生成监督；做“无筛选 / 置信度筛选 / 真实多视图上限”三组消融。</li>
+      <li><strong>端侧资产评估：</strong>记录 Gaussian 数量、模型文件大小、首帧时间、目标芯片 FPS、峰值内存和画质变化；压缩策略以原图可见区域质量不显著下降为约束。</li>
+    </ol>
+
+    <h2>8. 风险与边界</h2>
+    <ul>
+      <li>生成式方法可能产生跨视图不一致的文字、细线、镜面反射和动态物体，必须使用遮罩/置信度，不宜无差别蒸馏到 3DGS。</li>
+      <li>3DGS 的“实时”依赖高效 rasterizer；当前纯 PyTorch portable renderer 适合正确性验证，不适合高分辨率端侧部署或长时间 NPU 训练。</li>
+      <li>若任务要求测量级真实性、可编辑碰撞体或背面准确纹理，必须增加真实多帧、视频或深度传感器，不应以单图生成结果作为真值。</li>
+      <li>target-rig 的相机范围应在训练/生成阶段显式给出；在已经生成的单份 3DGS 上无限制地移动相机，无法保证新区域质量。</li>
+    </ul>
+
+    <h2>9. 参考资料</h2>
+    <ol class="source-list">
+      <li id="s1"><a href="https://doi.org/10.1145/3592433">Kerbl et al., 3D Gaussian Splatting for Real-Time Radiance Field Rendering, SIGGRAPH 2023</a></li>
+      <li id="s2"><a href="https://arxiv.org/abs/2312.12337">Charatan et al., pixelSplat: 3D Gaussian Splats from Image Pairs, CVPR 2024</a></li>
+      <li id="s3"><a href="https://donydchen.github.io/mvsplat/">Chen et al., MVSplat: Efficient 3D Gaussian Splatting from Sparse Multi-View Images, ECCV 2024</a></li>
+      <li id="s4"><a href="https://arxiv.org/abs/2412.09573">Xu et al., FreeSplatter: Pose-free Gaussian Splatting for Sparse-view 3D Reconstruction, ICCV 2025</a></li>
+      <li id="s5"><a href="https://cat3d.github.io/">Gao et al., CAT3D: Create Anything in 3D with Multi-View Diffusion Models, NeurIPS 2024</a></li>
+      <li id="s6"><a href="https://zero123.cs.columbia.edu/">Liu et al., Zero-1-to-3: Zero-shot One Image to 3D Object, ICCV 2023</a></li>
+      <li id="s7"><a href="https://rmurai.co.uk/projects/GaussianSplattingSLAM/">Matsuki et al., Gaussian Splatting SLAM, CVPR 2024</a></li>
+      <li id="s8"><a href="https://lightgaussian.github.io/">Fan et al., LightGaussian: Unbounded 3D Gaussian Compression, NeurIPS 2024</a></li>
+    </ol>
+
+    <footer>本报告将“真实重建”“视觉补全”“实时渲染”分开评估。论文报告的速度与指标受数据集、硬件和实现影响，不能直接等同于 Ascend NPU 或移动端的实际性能。</footer>
+  </article>
+</main>
+</body>
+</html>
