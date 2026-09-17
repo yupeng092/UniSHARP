@@ -11,10 +11,8 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from web_demo import create_app
-
-
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+_CHECKPOINT_RELATIVE_PATH = Path("checkpoints") / "released" / "pretained_model.pt"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -31,9 +29,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def missing_prerequisites(repo_root: Path = REPO_ROOT) -> list[str]:
+    """Return actionable setup problems before the server accepts uploads."""
+    problems: list[str] = []
+    if not (repo_root / _CHECKPOINT_RELATIVE_PATH).is_file():
+        problems.append(f"missing model checkpoint: {_CHECKPOINT_RELATIVE_PATH}")
+    try:
+        import flask  # noqa: F401
+    except ModuleNotFoundError:
+        problems.append("missing Python dependency: Flask")
+    return problems
+
+
 def main() -> None:
     """Create the app and start Flask without debugger or reloader processes."""
     args = parse_args()
+    problems = missing_prerequisites()
+    if problems:
+        joined = "\n- ".join(problems)
+        raise SystemExit(
+            "Cannot start the UniSHARP web demo:\n- "
+            f"{joined}\n\n"
+            "Run this once from the repository root:\n"
+            "python scripts/setup_web_demo.py --start"
+        )
+    from web_demo import create_app
+
     app = create_app({"BIND_HOST": args.host, "PORT": args.port})
     app.run(host=args.host, port=args.port, debug=False, use_reloader=False, threaded=True)
 
