@@ -55,3 +55,9 @@ def test_loopback_is_default_and_non_loopback_requires_explicit_flag():
     assert parse_args([]).host == "127.0.0.1"
     with pytest.raises(SystemExit):
         parse_args(["--host", "0.0.0.0"])
+
+
+def test_web_demo_preflight_names_missing_checkpoint(tmp_path):
+    from scripts.run_web_demo import missing_prerequisites
+
+    assert "missing model checkpoint: checkpoints\\released\\pretained_model.pt" in missing_prerequisites(tmp_path)
