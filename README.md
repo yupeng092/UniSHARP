@@ -36,11 +36,11 @@ UniSHARP extends SHARP-style photorealistic monocular view synthesis to universa
 
 ## 🔨 Installation
 
-Clone this repository and enter the project directory:
+Clone the interactive-demo repository and enter the project directory:
 
 ```bash
-git clone https://github.com/Insta360-Research-Team/UniSHARP.git
-cd Unisharp
+git clone https://github.com/yupeng092/UniSHARP.git
+cd UniSHARP
 ```
 
 Create a fresh conda environment:
@@ -66,11 +66,9 @@ pip install -r requirements.txt
 
 ### UniK3D
 
-UniSHARP uses UniK3D for universal camera ray and feature prediction. Clone the official repository into `Unisharp/UniK3D`:
-
-```bash
-git clone https://github.com/lpiccinelli-eth/UniK3D.git UniK3D
-```
+UniSHARP uses UniK3D for universal camera ray and feature prediction. The
+required source code is already included in `UniK3D/`; the web-demo setup
+command downloads its public ViT-L weight cache automatically.
 
 ### 3DGEER
 
@@ -724,13 +722,18 @@ thumbnail or drag the main image between the rendered left/right/up/down and
 diagonal views. Dragging selects an existing render; it does not synthesize a
 continuous unseen view in the browser.
 
-Install the extra web dependency once, then start the service from the project
-root:
+For a fresh clone on Windows, run this one command from the project root. It
+installs the Python packages, downloads the public UniSHARP and UniK3D weights
+to ignored local cache directories, and starts the service:
 
 ```powershell
-python -m pip install -r requirements.txt
-python scripts\run_web_demo.py
+python scripts\setup_web_demo.py --start
 ```
+
+The first run downloads several gigabytes of model weights and requires an
+Internet connection and sufficient free disk space. The weights are not stored
+in this GitHub repository. To prepare without starting the browser service,
+omit `--start`; later use `python scripts\run_web_demo.py`.
 
 Open [http://127.0.0.1:5000](http://127.0.0.1:5000) in a browser. The server
 listens only on this computer by default. Uploaded jobs run one at a time and
