@@ -156,7 +156,7 @@ class JobManager:
             ])
             report_path = render_root / "multiview_report.json"
             report = self._read_report(report_path)
-            views = self.views_from_report(report)
+            views = self.views_from_report(report, render_root=render_root)
             for view in views:
                 if not self.safe_job_file(job_id, f"render/{view['file']}").is_file():
                     raise RuntimeError("renderer did not produce every RGB view")
@@ -203,8 +203,8 @@ class JobManager:
         if job["phase"] not in {"complete", "failed"}:
             self.set_phase(job_id, "failed", error=message[:240])
 
-    def views_from_report(self, report: dict[str, Any]) -> list[dict[str, str]]:
-        """Convert a renderer report into relative, browser-safe view records."""
+    def views_from_report(self, report: dict[str, Any], *, render_root: Path | None = None) -> list[dict[str, str]]:
+        """Convert report RGB paths to browser-safe paths relative to ``render_root``."""
         cameras = report.get("cameras")
         if not isinstance(cameras, list) or not cameras:
             raise ValueError("render report does not contain cameras")
@@ -215,9 +215,19 @@ class JobManager:
             name, rgb = camera.get("name"), camera.get("rgb")
             if not isinstance(name, str) or not name or not isinstance(rgb, str) or not rgb:
                 raise ValueError("render report camera is missing name or RGB path")
-            path = PurePosixPath(rgb.replace("\\", "/"))
-            if path.is_absolute() or ".." in path.parts:
-                raise ValueError("render report RGB path must be relative")
+            source_path = Path(rgb)
+            if source_path.is_absolute():
+                if render_root is None:
+                    raise ValueError("absolute render report RGB path needs a render directory")
+                resolved_root = Path(render_root).resolve()
+                resolved_path = source_path.resolve()
+                if not resolved_path.is_relative_to(resolved_root):
+                    raise ValueError("render report RGB path is outside render directory")
+                path = PurePosixPath(resolved_path.relative_to(resolved_root).as_posix())
+            else:
+                path = PurePosixPath(rgb.replace("\\", "/"))
+                if path.is_absolute() or ".." in path.parts:
+                    raise ValueError("render report RGB path must be relative")
             views.append({"name": name, "file": path.as_posix()})
         return views
 

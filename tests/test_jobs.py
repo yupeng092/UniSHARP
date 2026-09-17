@@ -51,6 +51,20 @@ def test_view_manifest_uses_report_camera_names_and_rgb_paths(app):
     assert manager.views_from_report(report) == [{"name": "left", "file": "rgb/00_left.png"}]
 
 
+def test_view_manifest_normalizes_absolute_rgb_path_inside_render_directory(app):
+    manager = JobManager(app.config)
+    render_root = app.config["JOB_ROOT"] / "render"
+    report = {"cameras": [{"name": "left", "rgb": str(render_root / "rgb" / "00_left.png")}]}
+    assert manager.views_from_report(report, render_root=render_root) == [{"name": "left", "file": "rgb/00_left.png"}]
+
+
+def test_view_manifest_rejects_absolute_rgb_path_outside_render_directory(app, tmp_path):
+    manager = JobManager(app.config)
+    report = {"cameras": [{"name": "left", "rgb": str(tmp_path / "outside.png")}]}
+    with pytest.raises(ValueError, match="outside render directory"):
+        manager.views_from_report(report, render_root=app.config["JOB_ROOT"] / "render")
+
+
 def test_worker_runs_inference_render_and_gif_in_order(app):
     manager = JobManager(app.config, start_worker=False)
     job = manager.create_job("scene.png", BytesIO(png_bytes()))

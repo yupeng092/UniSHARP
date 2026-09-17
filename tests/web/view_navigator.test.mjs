@@ -15,6 +15,11 @@ test("dominant diagonal drag chooses a diagonal render", () => {
   assert.equal(viewForDrag(-70, 70, "right"), "lower_left");
 });
 
+test("vertical drag chooses the matching upper or lower render", () => {
+  assert.equal(viewForDrag(5, -80, "left"), "up");
+  assert.equal(viewForDrag(5, 80, "left"), "down");
+});
+
 test("short drag preserves the current named view", () => {
   assert.equal(viewForDrag(8, 5, "back"), "back");
 });
